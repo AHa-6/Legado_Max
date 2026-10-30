@@ -2077,6 +2077,13 @@
     <string name="top_bar_manage_summary">管理顶栏样式</string>
     <string name="top_bar_name">顶栏包名称</string>
     <string name="top_bar_name_exists">已存在同名顶栏包</string>
+    <string name="welcome_manage">开屏管理</string>
+    <string name="welcome_manage_summary">管理启动页图片、文字、图标和显示时间</string>
+    <string name="welcome_show_time_ms">显示时间：%d 毫秒</string>
+    <string name="welcome_default_name">默认</string>
+    <string name="welcome_current_name">当前开屏</string>
+    <string name="welcome_name_exists">已存在同名开屏</string>
+    <string name="add_welcome">添加开屏</string>
     <string name="top_bar_night_default_name">默认</string>
     <string name="top_bar_primary_color">主色调</string>
     <string name="top_bar_style">顶栏样式</string>

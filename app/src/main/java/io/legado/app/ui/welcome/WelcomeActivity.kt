@@ -11,6 +11,7 @@ import io.legado.app.data.appDb
 import io.legado.app.databinding.ActivityWelcomeBinding
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ThemeConfig
+import io.legado.app.help.config.WelcomePackageConfig
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.backgroundColor
 import io.legado.app.ui.book.read.ReadBookActivity
@@ -18,7 +19,6 @@ import io.legado.app.ui.main.MainActivity
 import io.legado.app.utils.BitmapUtils
 import io.legado.app.utils.fullScreen
 import io.legado.app.utils.getPrefBoolean
-import io.legado.app.utils.getPrefInt
 import io.legado.app.utils.getPrefString
 import io.legado.app.utils.setStatusBarColorAuto
 import io.legado.app.utils.startActivity
@@ -35,7 +35,8 @@ open class WelcomeActivity : BaseActivity<ActivityWelcomeBinding>() {
             // 避免从桌面启动程序后，会重新实例化入口类的activity
             finish()
         } else {
-            val welcomeShowTime = getPrefInt(PreferKey.welcomeShowTime, 500)
+            // 显示时间由开屏管理按日夜分别写入（夜间未设置时沿用日间值）
+            val welcomeShowTime = WelcomePackageConfig.showTime(ThemeConfig.getTheme() == Theme.Dark)
             if (welcomeShowTime == 0) {
                 startMainActivity()
             } else {

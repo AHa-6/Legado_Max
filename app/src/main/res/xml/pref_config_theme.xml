@@ -21,11 +21,6 @@
             app:iconSpaceReserved="false"
             app:icons="@array/icons" />
 
-        <io.legado.app.lib.prefs.Preference
-            android:key="welcomeStyle"
-            android:title="@string/welcome_style"
-            android:summary="@string/welcome_style_summary" />
-
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="true"
             android:key="transparentStatusBar"
@@ -106,6 +101,14 @@
             android:key="bubbleManage"
             android:summary="@string/bubble_manage_summary"
             android:title="@string/bubble_manage"
+            app:allowDividerAbove="false"
+            app:allowDividerBelow="false"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="welcomeManage"
+            android:summary="@string/welcome_manage_summary"
+            android:title="@string/welcome_manage"
             app:allowDividerAbove="false"
             app:allowDividerBelow="false"
             app:iconSpaceReserved="false" />

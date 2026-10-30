@@ -2488,6 +2488,13 @@
     <string name="top_bar_manage_summary">Manage top bar style</string>
     <string name="top_bar_name">Top bar package name</string>
     <string name="top_bar_name_exists">A top bar package with this name already exists</string>
+    <string name="welcome_manage">Splash manager</string>
+    <string name="welcome_manage_summary">Manage splash image, text, icon and display time</string>
+    <string name="welcome_show_time_ms">Display time: %d ms</string>
+    <string name="welcome_default_name">Default</string>
+    <string name="welcome_current_name">Current splash</string>
+    <string name="welcome_name_exists">A splash with this name already exists</string>
+    <string name="add_welcome">Add splash</string>
     <string name="top_bar_night_default_name">Default</string>
     <string name="top_bar_primary_color">Primary color</string>
     <string name="top_bar_style">Top Bar Style</string>

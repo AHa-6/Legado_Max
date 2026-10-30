@@ -10,6 +10,9 @@ import io.legado.app.model.BookCover
 import io.legado.app.ui.book.read.config.highlight.HighlightRuleStore
 import io.legado.app.ui.book.read.websearch.SearchEngineHelper
 import io.legado.app.utils.GSON
+import io.legado.app.utils.externalFiles
+import io.legado.app.utils.getFile
+
 import splitties.init.appCtx
 import java.io.File
 
@@ -88,6 +91,12 @@ object BackupInfoHelper {
         "applyRestoreConfig" to "应用恢复配置",
         "themeBackgroundImages" to "主题背景图片",
         CoverGalleryRepository.backupDirName to "封面图集",
+        Backup.APP_THEME_DIR to "应用主题",
+        Backup.TOP_BAR_DIR to "顶栏配置包",
+        Backup.NAV_ICON_DIR to "底栏图标",
+        Backup.BUBBLE_DIR to "气泡管理",
+        Backup.SHARE_TEMPLATE_DIR to "摘录分享模板",
+        Backup.WELCOME_DIR to "开屏管理",
         "bookshelf.json" to "书架书籍",
         "bookmark.json" to "书签",
         "bookGroup.json" to "书籍分组",
@@ -128,6 +137,16 @@ object BackupInfoHelper {
     fun getDisplayName(fileName: String): String {
         return displayNameMap[fileName] ?: fileName
     }
+
+    /** 外观类整目录备份项，归入「主题」分类 */
+    private val appearanceDirs = setOf(
+        Backup.APP_THEME_DIR,
+        Backup.TOP_BAR_DIR,
+        Backup.NAV_ICON_DIR,
+        Backup.BUBBLE_DIR,
+        Backup.SHARE_TEMPLATE_DIR,
+        Backup.WELCOME_DIR
+    )
 
     private val selectorFileAliases = mapOf(
         ReadBookConfig.shareConfigFileName to "readShareConfig.json",
@@ -204,8 +223,30 @@ object BackupInfoHelper {
         addConfigItems(::addItem)
         addBackgroundItems(::addItem)
         addCoverGalleryItem(::addItem)
+        addAppearanceItems(::addItem)
 
         return BackupOverview(items, totalSize, selectedSize)
+    }
+
+    /** 应用主题、顶栏配置包、底栏图标、气泡包、摘录分享模板 */
+    private fun addAppearanceItems(addItem: (String, Long) -> Unit) {
+        val themeFile = File(appCtx.filesDir, Backup.APP_THEME_FILE_NAME)
+        addItem(Backup.APP_THEME_DIR, if (themeFile.isFile) themeFile.length() else 0L)
+        listOf(
+            Backup.TOP_BAR_DIR,
+            Backup.NAV_ICON_DIR,
+            Backup.BUBBLE_DIR,
+            Backup.SHARE_TEMPLATE_DIR,
+            Backup.WELCOME_DIR
+        ).forEach { dirName ->
+            val excludes = Backup.externalDirExcludes[dirName].orEmpty()
+            val root = appCtx.externalFiles.getFile(dirName)
+            val size = root.listFiles()
+                ?.filter { it.name !in excludes }
+                ?.sumOf { child -> child.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+                ?: 0L
+            addItem(dirName, size)
+        }
     }
 
     private fun addBookCacheItems(addItem: (String, Long) -> Unit) {
@@ -342,7 +383,8 @@ object BackupInfoHelper {
 
         val themeItems = filteredItems.filter {
             !assigned.contains(it.fileName) &&
-                (it.fileName == "backgroundImages" || it.fileName == ThemeConfig.configFileName)
+                (it.fileName == "backgroundImages" || it.fileName == ThemeConfig.configFileName ||
+                    it.fileName in appearanceDirs)
         }
         if (themeItems.isNotEmpty()) {
             result.add(

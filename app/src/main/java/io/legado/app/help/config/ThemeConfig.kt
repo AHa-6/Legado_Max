@@ -60,6 +60,9 @@ object ThemeConfig {
     const val configFileName = "themeConfig.json"
     val configFilePath = FileUtils.getPath(appCtx.filesDir, configFileName)
 
+    /** 应用主题自带背景图的文件名前缀（由 ApplicationThemeManager / 各导入器生成） */
+    const val APP_THEME_BG_PREFIX = "application_theme_"
+
     /** 单线程调度器，保证所有写操作串行执行，避免并发竞态 */
     private val ioSerialDispatcher = Dispatchers.IO.limitedParallelism(1)
 
@@ -868,13 +871,14 @@ object ThemeConfig {
                 path
             }
         }
+        // 应用主题自带的背景图（application_theme_ 前缀）由应用主题引用，不在 configList 里，不能删
         appCtx.externalFiles.getFile(PreferKey.bgImage).listFiles()?.forEach {
-            if (!dayBackgroundImgPaths.contains(it.absolutePath)) {
+            if (!it.name.startsWith(APP_THEME_BG_PREFIX) && !dayBackgroundImgPaths.contains(it.absolutePath)) {
                 it.delete()
             }
         }
         appCtx.externalFiles.getFile(PreferKey.bgImageN).listFiles()?.forEach {
-            if (!nightBackgroundImgPaths.contains(it.absolutePath)) {
+            if (!it.name.startsWith(APP_THEME_BG_PREFIX) && !nightBackgroundImgPaths.contains(it.absolutePath)) {
                 it.delete()
             }
         }

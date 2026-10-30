@@ -9,6 +9,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import io.legado.app.BuildConfig
 import io.legado.app.R
 import io.legado.app.constant.AppLog
@@ -44,6 +45,13 @@ import io.legado.app.data.entities.Server
 import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.AppCacheManager
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.ApplicationThemeManager
+import io.legado.app.help.config.BubblePackageManager
+import io.legado.app.help.config.NavigationBarConfig
+import io.legado.app.help.config.ShareNoteTemplateManager
+import io.legado.app.help.config.TopBarConfig
+import io.legado.app.help.config.WelcomePackageConfig
+import io.legado.app.model.ImageProvider
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.model.CacheBook
 import io.legado.app.exception.NoStackTraceException
@@ -92,6 +100,7 @@ import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 import java.io.File
 import java.io.FileInputStream
+import java.security.MessageDigest
 
 /**
  * 恢复管理类
@@ -730,6 +739,10 @@ object Restore {
         fixThemeBackgroundPaths()
         fixThemeConfigBackgroundPaths()
 
+        // 顶栏配置包、底栏图标、气泡包、分享模板、应用主题
+        // 放在 config.xml 之后：改名并存时要改写刚恢复出来的设置值
+        restoreAppearancePackages(plan) { progress(it) }
+
         // 视频播放配置
         if (plan.has("videoConfig.xml")) {
             progress("videoConfig.xml")
@@ -947,6 +960,287 @@ object Restore {
         return candidate
     }
 
+    /**
+     * 恢复外观类目录：顶栏配置包、底栏图标、气泡包、摘录分享模板、应用主题。
+     *
+     * 覆盖模式清空本机后以备份为准；合并模式下同名且内容一致则跳过，
+     * 不一致则备份那份改名为 `原名_N` 并存，再按映射改写引用它的设置值。
+     * 应用主题依赖顶栏改名映射，放在最后。
+     */
+    private suspend fun restoreAppearancePackages(plan: RestorePlan, progress: (String) -> Unit) {
+        var topBarDayMap: Map<String, String> = emptyMap()
+        var topBarNightMap: Map<String, String> = emptyMap()
+
+        if (plan.has(Backup.TOP_BAR_DIR)) {
+            progress(Backup.TOP_BAR_DIR)
+            runCatching {
+                val replace = plan.shouldReplace(Backup.TOP_BAR_DIR)
+                val srcRoot = File(plan.dir, Backup.TOP_BAR_DIR)
+                val dstRoot = appCtx.externalFiles.getFile(Backup.TOP_BAR_DIR)
+                val excludes = setOf("_active", "temp")
+                listOf(false, true).forEach { isNight ->
+                    val sub = if (isNight) "night" else "day"
+                    val src = File(srcRoot, sub)
+                    if (!src.isDirectory) return@forEach
+                    val dst = File(dstRoot, sub)
+                    val mapping = restorePackageDir(src, dst, replace, excludes)
+                    // 壁纸等绝对路径改写到本机包目录
+                    src.listFiles()?.filter { it.isDirectory && it.name !in excludes }?.forEach { pkg ->
+                        val newName = mapping[pkg.name] ?: pkg.name
+                        rewriteTopBarJson(File(dst, newName), mapping.containsKey(pkg.name))
+                    }
+                    rewritePrefDir(PreferKey.topBarPackageDay.takeIf { !isNight } ?: PreferKey.topBarPackageNight, mapping)
+                    if (isNight) topBarNightMap = mapping else topBarDayMap = mapping
+                    TopBarConfig.loadEntries(appCtx, isNight)
+                        .firstOrNull { it.dirName == TopBarConfig.activeDirName(isNight) }
+                        ?.let { TopBarConfig.apply(it) }
+                    postEvent(EventBus.TOP_BAR_CHANGED, isNight)
+                }
+            }.onFailure { AppLog.put("恢复顶栏配置包出错\n${it.localizedMessage}", it) }
+        }
+
+        if (plan.has(Backup.NAV_ICON_DIR)) {
+            progress(Backup.NAV_ICON_DIR)
+            runCatching {
+                val replace = plan.shouldReplace(Backup.NAV_ICON_DIR)
+                val src = File(plan.dir, Backup.NAV_ICON_DIR)
+                val dst = appCtx.externalFiles.getFile(Backup.NAV_ICON_DIR)
+                val mapping = restorePackageDir(src, dst, replace, emptySet())
+                // 图标存的是绝对路径，改写为本机路径（同时套用改名映射）
+                val marker = "/${Backup.NAV_ICON_DIR}/"
+                val configs = NavigationBarConfig.loadConfigs(appCtx)
+                val rewritten = configs.map { config ->
+                    val icons = config.icons.mapValues { (_, path) ->
+                        val idx = path.indexOf(marker)
+                        if (idx < 0) return@mapValues path
+                        val rel = path.substring(idx + marker.length)
+                        val dirName = rel.substringBefore('/')
+                        val rest = rel.substringAfter('/', "")
+                        val newDir = mapping[dirName] ?: dirName
+                        File(File(dst, newDir), rest).absolutePath
+                    }
+                    if (icons == config.icons) config else config.copy(icons = icons)
+                }
+                NavigationBarConfig.saveConfigs(appCtx, rewritten)
+                NavigationBarConfig.clearIconCache()
+                postEvent(EventBus.NAVIGATION_BAR_CHANGED, false)
+                postEvent(EventBus.NAVIGATION_BAR_CHANGED, true)
+            }.onFailure { AppLog.put("恢复底栏图标出错\n${it.localizedMessage}", it) }
+        }
+
+        if (plan.has(Backup.BUBBLE_DIR)) {
+            progress(Backup.BUBBLE_DIR)
+            runCatching {
+                val replace = plan.shouldReplace(Backup.BUBBLE_DIR)
+                val src = File(plan.dir, Backup.BUBBLE_DIR)
+                val excludes = setOf("temp", "remote_cache", BubblePackageManager.BUILTIN_DIR_NAME)
+                val mapping = restorePackageDir(src, BubblePackageManager.rootDir, replace, excludes)
+                mapping.values.forEach { appendJsonName(File(BubblePackageManager.rootDir, "$it/bubble.json")) }
+                rewritePrefDir(PreferKey.paragraphBubblePackage, mapping)
+                BubblePackageManager.invalidateCurrentEntry()
+                ImageProvider.clear()
+                postEvent(EventBus.UP_CONFIG, arrayListOf(5))
+            }.onFailure { AppLog.put("恢复气泡包出错\n${it.localizedMessage}", it) }
+        }
+
+        if (plan.has(Backup.SHARE_TEMPLATE_DIR)) {
+            progress(Backup.SHARE_TEMPLATE_DIR)
+            runCatching {
+                val replace = plan.shouldReplace(Backup.SHARE_TEMPLATE_DIR)
+                val src = File(plan.dir, Backup.SHARE_TEMPLATE_DIR)
+                val dst = appCtx.externalFiles.getFile(Backup.SHARE_TEMPLATE_DIR)
+                val excludes = setOf("temp", ".preview", ShareNoteTemplateManager.BUILTIN_DIR_NAME)
+                val mapping = restorePackageDir(src, dst, replace, excludes)
+                // 分享模板不改显示名，只改写引用
+                rewritePrefDir("shareNoteTemplateActive", mapping)
+                rewritePrefDir("shareNoteTemplateLast", mapping)
+                mapping.values.forEach { ShareNoteTemplateManager.clearPreview(it) }
+            }.onFailure { AppLog.put("恢复摘录分享模板出错\n${it.localizedMessage}", it) }
+        }
+
+        // 开屏管理：内置「默认」不落盘，备份里只有用户自建的开屏
+        var welcomeDayMap: Map<String, String> = emptyMap()
+        var welcomeNightMap: Map<String, String> = emptyMap()
+        if (plan.has(Backup.WELCOME_DIR)) {
+            progress(Backup.WELCOME_DIR)
+            runCatching {
+                val replace = plan.shouldReplace(Backup.WELCOME_DIR)
+                val srcRoot = File(plan.dir, Backup.WELCOME_DIR)
+                listOf(false, true).forEach { isNight ->
+                    val sub = if (isNight) "night" else "day"
+                    val src = File(srcRoot, sub)
+                    if (!src.isDirectory) return@forEach
+                    val dst = File(WelcomePackageConfig.rootDir, sub)
+                    val mapping = restorePackageDir(src, dst, replace, emptySet())
+                    mapping.values.forEach { appendJsonName(File(dst, "$it/welcome.json")) }
+                    rewritePrefDir(
+                        if (isNight) PreferKey.welcomePackageNight else PreferKey.welcomePackageDay,
+                        mapping
+                    )
+                    if (isNight) welcomeNightMap = mapping else welcomeDayMap = mapping
+                }
+                // 图片绝对路径随本机目录更新
+                WelcomePackageConfig.reapplyActive()
+            }.onFailure { AppLog.put("恢复开屏管理出错\n${it.localizedMessage}", it) }
+        }
+
+        if (plan.has(Backup.APP_THEME_DIR)) {
+            progress(Backup.APP_THEME_DIR)
+            runCatching {
+                restoreApplicationThemes(plan, topBarDayMap, topBarNightMap, welcomeDayMap, welcomeNightMap)
+            }.onFailure { AppLog.put("恢复应用主题出错\n${it.localizedMessage}", it) }
+        }
+    }
+
+    private fun restoreApplicationThemes(
+        plan: RestorePlan,
+        topBarDayMap: Map<String, String>,
+        topBarNightMap: Map<String, String>,
+        welcomeDayMap: Map<String, String>,
+        welcomeNightMap: Map<String, String>
+    ) {
+        val srcRoot = File(plan.dir, Backup.APP_THEME_DIR)
+        val json = File(srcRoot, Backup.APP_THEME_FILE_NAME).takeIf { it.isFile }?.readText() ?: return
+        val list = GSON.fromJsonArray<ApplicationThemeManager.Config>(json).getOrNull() ?: return
+        // 封面组：旧 ID → 目录名 → 本机新 ID（组名即目录名）
+        val oldIdToName: Map<String, String> =
+            File(srcRoot, Backup.APP_THEME_COVER_GROUPS_FILE_NAME).takeIf { it.isFile }
+                ?.let { GSON.fromJsonObject<Map<String, String>>(it.readText()).getOrNull() }
+                ?: emptyMap()
+        val nameToNewId = appDb.coverGalleryDao.allGroups.associate { it.name to it.id }
+        fun mapGroup(old: Long?): Long? {
+            old ?: return null
+            val name = oldIdToName[old.toString()] ?: return old
+            return nameToNewId[name] ?: old
+        }
+        // 背景图：备份里放在 applicationThemes/<prefKey>/文件名
+        val bgKeys = listOf(PreferKey.bgImage, PreferKey.bgImageN)
+        fun restoreBg(theme: ThemeConfig.Config?): ThemeConfig.Config? {
+            theme ?: return null
+            val path = theme.backgroundImgPath
+            if (path.isNullOrBlank()) return theme
+            // 与 Backup.resolveThemeBackgroundFile 一致：网络图按 URL 换算的本地文件名暂存
+            val fileName = if (path.startsWith("http")) ThemeConfig.getUrlToFile(path) else File(path).name
+            for (key in bgKeys) {
+                val staged = File(File(srcRoot, key), fileName)
+                if (!staged.isFile) continue
+                val target = File(appCtx.externalFiles.getFile(key).apply { mkdirs() }, fileName)
+                staged.copyTo(target, overwrite = true)
+                return theme.copy(backgroundImgPath = target.absolutePath)
+            }
+            return theme
+        }
+        val restored = list.map { config ->
+            config.copy(
+                dayTheme = restoreBg(config.dayTheme),
+                nightTheme = restoreBg(config.nightTheme),
+                dayWelcomeDir = config.dayWelcomeDir?.let { welcomeDayMap[it] ?: it },
+                nightWelcomeDir = config.nightWelcomeDir?.let { welcomeNightMap[it] ?: it },
+                dayTopBarDir = topBarDayMap[config.dayTopBarDir] ?: config.dayTopBarDir,
+                nightTopBarDir = topBarNightMap[config.nightTopBarDir] ?: config.nightTopBarDir,
+                dayCoverGroupId = mapGroup(config.dayCoverGroupId),
+                nightCoverGroupId = mapGroup(config.nightCoverGroupId)
+            )
+        }
+        ApplicationThemeManager.mergeRestored(restored, plan.shouldReplace(Backup.APP_THEME_DIR))
+    }
+
+    /**
+     * 把备份目录 [source] 下的各个包目录恢复到 [target]。
+     * @return 改名映射（备份原名 → 本机新名），仅包含因冲突而改名的项
+     */
+    private fun restorePackageDir(
+        source: File,
+        target: File,
+        replace: Boolean,
+        excludes: Set<String>
+    ): Map<String, String> {
+        val mapping = linkedMapOf<String, String>()
+        if (!source.isDirectory) return mapping
+        target.mkdirs()
+        if (replace) {
+            target.listFiles()?.filter { it.name !in excludes }?.forEach {
+                FileUtils.delete(it, deleteRootDir = true)
+            }
+        }
+        source.listFiles()?.filter { it.name !in excludes }?.forEach { child ->
+            val dest = File(target, child.name)
+            when {
+                !dest.exists() -> child.copyRecursively(dest, overwrite = true)
+                child.isFile -> Unit // 合并模式下根目录同名文件保留本机
+                sameDirContent(child, dest, excludes) -> Unit
+                else -> {
+                    var n = 1
+                    var newName = "${child.name}_$n"
+                    while (File(target, newName).exists()) newName = "${child.name}_${++n}"
+                    child.copyRecursively(File(target, newName), overwrite = true)
+                    mapping[child.name] = newName
+                }
+            }
+        }
+        return mapping
+    }
+
+    /** 相对路径、大小、MD5 全部一致才视为相同（排除临时目录） */
+    private fun sameDirContent(a: File, b: File, excludes: Set<String>): Boolean {
+        if (!b.isDirectory) return false
+        return dirDigest(a, excludes) == dirDigest(b, excludes)
+    }
+
+    private fun dirDigest(dir: File, excludes: Set<String>): Map<String, String> {
+        return dir.walkTopDown()
+            .onEnter { it == dir || it.name !in excludes }
+            .filter { it.isFile }
+            .associate { file ->
+                val md = MessageDigest.getInstance("MD5")
+                FileInputStream(file).use { input ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        val len = input.read(buf)
+                        if (len <= 0) break
+                        md.update(buf, 0, len)
+                    }
+                }
+                val hex = md.digest().joinToString("") { "%02x".format(it) }
+                file.relativeTo(dir).invariantSeparatorsPath to "${file.length()}:$hex"
+            }
+    }
+
+    /** 设置值引用了被改名的目录时，改写为新名 */
+    private fun rewritePrefDir(key: String, mapping: Map<String, String>) {
+        if (mapping.isEmpty()) return
+        val old = appCtx.getPrefString(key) ?: return
+        mapping[old]?.let { appCtx.putPrefString(key, it) }
+    }
+
+    /** 改名并存的包在显示名后加「(备份)」 */
+    private fun appendJsonName(file: File) {
+        if (!file.isFile) return
+        runCatching {
+            val root = JsonParser.parseString(file.readText())
+            if (!root.isJsonObject) return
+            val obj = root.asJsonObject
+            val name = obj.get("name")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+            if (name.endsWith("(备份)")) return
+            obj.add("name", JsonPrimitive("$name(备份)"))
+            file.writeText(GSON.toJson(obj))
+        }.onFailure { AppLog.put("改写 ${file.path} 名称出错", it) }
+    }
+
+    /** 顶栏包内的绝对路径（壁纸等）指向原设备目录，改写到本机包目录 */
+    private fun rewriteTopBarJson(pkgDir: File, renamed: Boolean) {
+        val file = File(pkgDir, "top_bar.json")
+        if (!file.isFile) return
+        runCatching {
+            val regex = Regex("""[^"]*?/${Backup.TOP_BAR_DIR}/(day|night)/[^/"]+/""")
+            val localPrefix = pkgDir.absolutePath.replace("\\", "/").trimEnd('/') + "/"
+            // Kotlin 的 transform 结果按字面量拼接，无需转义
+            val text = file.readText().replace(regex) { localPrefix }
+            file.writeText(text)
+            if (renamed) appendJsonName(file)
+        }.onFailure { AppLog.put("改写顶栏配置路径出错 ${pkgDir.name}", it) }
+    }
+
     private fun readBackupPrefs(path: String, fileName: String): Map<String, Any>? {
         val file = File(path, "$fileName.xml")
         if (!file.exists()) return null
@@ -1034,7 +1328,12 @@ object Restore {
     private fun clearThemeBackgrounds() {
         listOf(PreferKey.bgImage, PreferKey.bgImageN).forEach { prefKey ->
             val bgDir = appCtx.externalFiles.getFile(prefKey)
-            FileUtils.delete(bgDir)
+            // 应用主题自带的背景图（application_theme_ 前缀）归应用主题管理，这里不清理
+            bgDir.listFiles()?.forEach { file ->
+                if (!file.name.startsWith(ThemeConfig.APP_THEME_BG_PREFIX)) {
+                    if (file.isDirectory) file.deleteRecursively() else file.delete()
+                }
+            }
             bgDir.mkdirs()
         }
     }

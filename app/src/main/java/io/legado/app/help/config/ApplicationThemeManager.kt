@@ -15,6 +15,7 @@ import io.legado.app.utils.getPrefString
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.putPrefBoolean
 import io.legado.app.utils.putPrefString
+
 import io.legado.app.utils.normalizeFileName
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.getFile
@@ -120,6 +121,10 @@ object ApplicationThemeManager {
         var dayCoverGroupId: Long? = null,
         var nightCoverGroupId: Long? = null,
         var updatedAt: Long = System.currentTimeMillis(),
+        /** 日间开屏目录名（开屏管理）；null 表示不设置（旧数据没有此字段，读出来也是 null） */
+        var dayWelcomeDir: String? = null,
+        /** 夜间开屏目录名；null 表示不设置 */
+        var nightWelcomeDir: String? = null,
     )
 
     /** zip 包内部数据结构，包含清单和各子配置的打包数据 */
@@ -502,6 +507,8 @@ object ApplicationThemeManager {
             nightBottomBarId = NavigationBarConfig.activeConfig(context, true).id,
             dayCoverGroupId = selectedCoverGroupId(context, false),
             nightCoverGroupId = selectedCoverGroupId(context, true),
+            dayWelcomeDir = WelcomePackageConfig.activeDirName(false),
+            nightWelcomeDir = WelcomePackageConfig.activeDirName(true),
         )
     }
 
@@ -652,6 +659,10 @@ object ApplicationThemeManager {
         coverRepository.setSelectedGroup(false, config.dayCoverGroupId)
         coverRepository.setSelectedGroup(true, config.nightCoverGroupId)
 
+        // 开屏：null 表示不设置，保持现状（与顶栏/底栏一致）
+        config.dayWelcomeDir?.let { WelcomePackageConfig.applyDir(false, it) }
+        config.nightWelcomeDir?.let { WelcomePackageConfig.applyDir(true, it) }
+
         if (config.dayTheme != null && context.getPrefString(PreferKey.dThemeName) != config.dayTheme?.themeName) {
             throw IllegalStateException(appCtx.getString(R.string.app_theme_day_apply_failed))
         }
@@ -692,6 +703,33 @@ object ApplicationThemeManager {
             temp.copyTo(target, overwrite = true)
             temp.delete()
         }
+    }
+
+    /**
+     * 备份恢复专用：把备份包里的应用主题写回本地。
+     *
+     * - [replace] 为 true：以备份为准整体替换本地列表；
+     * - 否则按 ID 合并：本地没有的直接加入，ID 相同时保留 updatedAt 较新的那份。
+     * 内置默认主题不落盘；无法通过校验的条目（如名称为空）直接跳过。
+     * 本地文件损坏读不出来时按空列表处理，[save] 会先把原文件备份为 .bak。
+     */
+    fun mergeRestored(restored: List<Config>, replace: Boolean) {
+        val incoming = restored
+            .mapNotNull { runCatching { sanitize(it) }.getOrNull() }
+            .filterNot { it.id == builtinThemeId }
+        if (replace) {
+            save(incoming)
+            return
+        }
+        val merged = LinkedHashMap<String, Config>()
+        runCatching { loadPersisted() }.getOrDefault(mutableListOf()).forEach { merged[it.id] = it }
+        incoming.forEach { item ->
+            val local = merged[item.id]
+            if (local == null || item.updatedAt > local.updatedAt) {
+                merged[item.id] = item
+            }
+        }
+        save(merged.values.toList())
     }
 
     private fun applyTopBar(context: Context, isNight: Boolean, dirName: String) {
@@ -981,6 +1019,8 @@ object ApplicationThemeManager {
             dayCoverGroupId = runCatching { source.dayCoverGroupId }.getOrNull(),
             nightCoverGroupId = runCatching { source.nightCoverGroupId }.getOrNull(),
             updatedAt = runCatching { source.updatedAt }.getOrDefault(System.currentTimeMillis()),
+            dayWelcomeDir = runCatching { source.dayWelcomeDir }.getOrNull()?.takeIf { it.isNotBlank() },
+            nightWelcomeDir = runCatching { source.nightWelcomeDir }.getOrNull()?.takeIf { it.isNotBlank() },
         )
     }
 }

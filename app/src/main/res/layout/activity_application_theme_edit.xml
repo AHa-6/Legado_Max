@@ -46,6 +46,7 @@
             <TextView android:id="@+id/row_day_top_bar" style="@style/ApplicationThemeEditRow" />
             <TextView android:id="@+id/row_day_bottom_bar" style="@style/ApplicationThemeEditRow" />
             <TextView android:id="@+id/row_day_cover" style="@style/ApplicationThemeEditRow" />
+            <TextView android:id="@+id/row_day_welcome" style="@style/ApplicationThemeEditRow" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -61,6 +62,7 @@
             <TextView android:id="@+id/row_night_top_bar" style="@style/ApplicationThemeEditRow" />
             <TextView android:id="@+id/row_night_bottom_bar" style="@style/ApplicationThemeEditRow" />
             <TextView android:id="@+id/row_night_cover" style="@style/ApplicationThemeEditRow" />
+            <TextView android:id="@+id/row_night_welcome" style="@style/ApplicationThemeEditRow" />
         </LinearLayout>
     </ScrollView>
 

@@ -263,6 +263,9 @@
         <activity
             android:name=".ui.config.TopBarManageActivity"
             android:launchMode="standard" />
+        <activity
+            android:name=".ui.config.WelcomeManageActivity"
+            android:launchMode="standard" />
         <!-- 搜索界面 -->
         <activity
             android:name=".ui.config.BubbleManageActivity"

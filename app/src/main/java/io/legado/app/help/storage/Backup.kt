@@ -12,9 +12,13 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.ApplicationThemeManager
+import io.legado.app.help.config.BubblePackageManager
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
+import io.legado.app.help.config.ShareNoteTemplateManager
 import io.legado.app.help.config.ThemeConfig
+import io.legado.app.help.config.WelcomePackageConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.BookCover
 import io.legado.app.data.entities.readRecord.ReadRecord
@@ -126,6 +130,25 @@ object Backup {
     private const val bookCacheIndexFileName = "bookCacheIndex.json"
     private const val bookCacheBooksFileName = "bookCacheBooks.json"
 
+    /** 应用主题暂存目录：applicationThemes.json、封面组对照表、主题自带背景图 */
+    const val APP_THEME_DIR = "applicationThemes"
+    /** 顶栏配置包目录（externalFiles 下同名目录整体备份） */
+    const val TOP_BAR_DIR = "topBarPackages"
+    /** 底栏图标目录（externalFiles 下同名目录整体备份） */
+    const val NAV_ICON_DIR = "navigationBarIcons"
+    /** 气泡包目录（externalFiles 下同名目录整体备份） */
+    const val BUBBLE_DIR = BubblePackageManager.backupDirName
+    /** 摘录分享模板目录（externalFiles 下同名目录整体备份） */
+    const val SHARE_TEMPLATE_DIR = "shareNoteTemplates"
+    /** 开屏管理目录（externalFiles 下同名目录整体备份；内置「默认」不落盘，不参与备份） */
+    const val WELCOME_DIR = WelcomePackageConfig.BACKUP_DIR_NAME
+    /** 应用主题数据文件名（位于 filesDir） */
+    internal const val APP_THEME_FILE_NAME = "applicationThemes.json"
+    /** 备份时的封面组 ID → 组名对照表，恢复时用来把旧 ID 对回新 ID */
+    internal const val APP_THEME_COVER_GROUPS_FILE_NAME = "coverGroups.json"
+    /** 应用主题自带背景图的文件名前缀 */
+    internal const val APP_THEME_BG_PREFIX = ThemeConfig.APP_THEME_BG_PREFIX
+
     /** 备份临时目录路径，用于存放解压/压缩前的文件 */
     val backupPath: String by lazy {
         appCtx.filesDir.getFile("backup").createFolderIfNotExist().absolutePath
@@ -176,7 +199,13 @@ object Backup {
             "config.xml",
             "videoConfig.xml",
             "homepage.json",
-            CoverGalleryRepository.backupDirName
+            CoverGalleryRepository.backupDirName,
+            APP_THEME_DIR,
+            TOP_BAR_DIR,
+            NAV_ICON_DIR,
+            BUBBLE_DIR,
+            SHARE_TEMPLATE_DIR,
+            WELCOME_DIR
         )
     }
 
@@ -316,9 +345,9 @@ object Backup {
         if (groups.isEmpty()) return
         val imagesByGroup = appDb.coverGalleryDao.allImages.groupBy { it.groupId }
         val rootDir = File(rootPath, CoverGalleryRepository.backupDirName).createFolderIfNotExist()
-        val usedFolderNames = hashSetOf<String>()
-        groups.forEachIndexed { index, group ->
-            val folderName = uniqueCoverGalleryFolderName(group.name, index, usedFolderNames)
+        val folderNames = coverGalleryFolderNames()
+        groups.forEach { group ->
+            val folderName = folderNames[group.id] ?: return@forEach
             val groupDir = File(rootDir, folderName).createFolderIfNotExist()
             imagesByGroup[group.id].orEmpty()
                 .sortedWith(compareBy({ it.order }, { it.id }))
@@ -328,6 +357,79 @@ object Backup {
                 .forEach { imageFile ->
                     imageFile.copyTo(File(groupDir, imageFile.name), overwrite = true)
                 }
+        }
+    }
+
+    /**
+     * 封面组 ID → 备份目录名。
+     *
+     * 恢复时按目录名重建分组，新组名即目录名，所以这份对照表可以把
+     * 应用主题、coverCollectionDay/Night 里的旧组 ID 对回新组 ID。
+     */
+    internal fun coverGalleryFolderNames(): Map<Long, String> {
+        val usedFolderNames = hashSetOf<String>()
+        val result = LinkedHashMap<Long, String>()
+        appDb.coverGalleryDao.allGroups.forEachIndexed { index, group ->
+            result[group.id] = uniqueCoverGalleryFolderName(group.name, index, usedFolderNames)
+        }
+        return result
+    }
+
+    /**
+     * 暂存应用主题：applicationThemes.json、封面组对照表、主题引用的背景图。
+     * 背景图按所在槽位放进 bgImage / bgImageN 子目录，恢复时再改写路径。
+     */
+    fun stageApplicationThemes(rootPath: String) {
+        val source = File(appCtx.filesDir, APP_THEME_FILE_NAME)
+        if (!source.isFile || source.length() <= 0L) return
+        val rootDir = File(rootPath, APP_THEME_DIR)
+        FileUtils.delete(rootDir, deleteRootDir = true)
+        rootDir.createFolderIfNotExist()
+        source.copyTo(File(rootDir, APP_THEME_FILE_NAME), overwrite = true)
+        val folderNames = coverGalleryFolderNames()
+        if (folderNames.isNotEmpty()) {
+            File(rootDir, APP_THEME_COVER_GROUPS_FILE_NAME)
+                .writeText(GSON.toJson(folderNames.mapKeys { it.key.toString() }))
+        }
+        ApplicationThemeManager.load()
+            .filterNot { it.id == ApplicationThemeManager.builtinThemeId }
+            .forEach { config ->
+                listOf(
+                    config.dayTheme to PreferKey.bgImage,
+                    config.nightTheme to PreferKey.bgImageN
+                ).forEach { (theme, prefKey) ->
+                    val path = theme?.backgroundImgPath?.takeIf { it.isNotBlank() }
+                        ?: return@forEach
+                    resolveThemeBackgroundFile(path, prefKey)?.let { bgFile ->
+                        val targetDir = File(rootDir, prefKey).createFolderIfNotExist()
+                        bgFile.copyTo(File(targetDir, bgFile.name), overwrite = true)
+                    }
+                }
+            }
+    }
+
+    /** 整目录备份时要跳过的临时子目录 */
+    internal val externalDirExcludes: Map<String, Set<String>> = mapOf(
+        // 与阅读arc 一致：跳过临时目录、远程缓存和内置包（内置包由代码生成，不落盘也不需要备份）
+        BUBBLE_DIR to setOf("temp", "remote_cache", BubblePackageManager.BUILTIN_DIR_NAME),
+        SHARE_TEMPLATE_DIR to setOf("temp", ".preview", ShareNoteTemplateManager.BUILTIN_DIR_NAME)
+    )
+
+    /**
+     * 把 externalFiles 下的 [dirName] 目录整体暂存到 [rootPath]/[dirName]，
+     * 用于顶栏配置包、底栏图标、气泡包、分享模板。
+     */
+    fun stageExternalDir(rootPath: String, dirName: String) {
+        val source = appCtx.externalFiles.getFile(dirName)
+        if (!source.isDirectory) return
+        val excludes = externalDirExcludes[dirName].orEmpty()
+        val children = source.listFiles()?.filter { it.name !in excludes }.orEmpty()
+        if (children.isEmpty()) return
+        val target = File(rootPath, dirName)
+        FileUtils.delete(target, deleteRootDir = true)
+        target.createFolderIfNotExist()
+        children.forEach { child ->
+            child.copyRecursively(File(target, child.name), overwrite = true)
         }
     }
 
@@ -628,6 +730,16 @@ object Backup {
         if (selectedFiles.contains(CoverGalleryRepository.backupDirName)) {
             onProgress?.invoke(BackupInfoHelper.getDisplayName(CoverGalleryRepository.backupDirName))
             stageCoverGallery(backupPath)
+        }
+        if (selectedFiles.contains(APP_THEME_DIR)) {
+            onProgress?.invoke(BackupInfoHelper.getDisplayName(APP_THEME_DIR))
+            stageApplicationThemes(backupPath)
+        }
+        listOf(TOP_BAR_DIR, NAV_ICON_DIR, BUBBLE_DIR, SHARE_TEMPLATE_DIR, WELCOME_DIR).forEach { dirName ->
+            if (selectedFiles.contains(dirName)) {
+                onProgress?.invoke(BackupInfoHelper.getDisplayName(dirName))
+                stageExternalDir(backupPath, dirName)
+            }
         }
 
         // 服务器配置需要加密存储

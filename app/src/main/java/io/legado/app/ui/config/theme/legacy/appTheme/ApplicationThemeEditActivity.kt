@@ -12,6 +12,7 @@ import io.legado.app.help.config.ApplicationThemeManager
 import io.legado.app.help.config.NavigationBarConfig
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.help.config.TopBarConfig
+import io.legado.app.help.config.WelcomePackageConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.theme.accentColor
@@ -84,6 +85,8 @@ class ApplicationThemeEditActivity : BaseActivity<ActivityApplicationThemeEditBi
         rowNightBottomBar.setOnClickListener { selectBottomBar(true) }
         rowDayCover.setOnClickListener { selectCover(false) }
         rowNightCover.setOnClickListener { selectCover(true) }
+        rowDayWelcome.setOnClickListener { selectWelcome(false) }
+        rowNightWelcome.setOnClickListener { selectWelcome(true) }
         btnSave.setOnClickListener { save() }
         btnDelete.setOnClickListener { confirmDelete() }
     }
@@ -105,6 +108,24 @@ class ApplicationThemeEditActivity : BaseActivity<ActivityApplicationThemeEditBi
         val covers = CoverGalleryRepository()
         setRow(binding.rowDayCover, R.string.application_theme_component_cover, covers.getGroupName(item.dayCoverGroupId))
         setRow(binding.rowNightCover, R.string.application_theme_component_cover, covers.getGroupName(item.nightCoverGroupId))
+        setRow(binding.rowDayWelcome, R.string.welcome_manage, welcomeName(false, item.dayWelcomeDir))
+        setRow(binding.rowNightWelcome, R.string.welcome_manage, welcomeName(true, item.nightWelcomeDir))
+    }
+
+    /** 开屏名称；未设置或已被删除时返回 null */
+    private fun welcomeName(isNight: Boolean, dirName: String?): String? =
+        WelcomePackageConfig.findEntry(isNight, dirName)?.config?.name
+
+    /** 从开屏管理中已保存的开屏里挑选，可设为「不设置」 */
+    private fun selectWelcome(isNight: Boolean) {
+        val options = WelcomePackageConfig.loadEntries(isNight)
+        val labels = listOf(getString(R.string.application_theme_not_set)) + options.map { it.config.name }
+        selector(getString(R.string.welcome_manage), labels) { _, index ->
+            val item = config ?: return@selector
+            val selected = options.getOrNull(index - 1)?.dirName
+            config = if (isNight) item.copy(nightWelcomeDir = selected) else item.copy(dayWelcomeDir = selected)
+            render(updateName = false)
+        }
     }
 
     /**

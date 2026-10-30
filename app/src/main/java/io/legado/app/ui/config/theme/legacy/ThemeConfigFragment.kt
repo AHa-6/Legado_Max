@@ -36,6 +36,7 @@ import io.legado.app.ui.config.ConfigTag
 import io.legado.app.ui.config.NavigationBarManageActivity
 import io.legado.app.ui.config.ShareNoteTemplateManageActivity
 import io.legado.app.ui.config.TopBarManageActivity
+import io.legado.app.ui.config.WelcomeManageActivity
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.config.theme.manage.ThemeManageActivity
 import io.legado.app.ui.config.theme.legacy.appTheme.ApplicationThemeActivity
@@ -305,9 +306,7 @@ class ThemeConfigFragment :
 
             "bubbleManage" -> startActivity<BubbleManageActivity>()
 
-            "welcomeStyle" -> startActivity<ConfigActivity> {
-                putExtra("configTag", ConfigTag.WELCOME_CONFIG)
-            }
+            "welcomeManage" -> startActivity<WelcomeManageActivity>()
         }
         return super.onPreferenceTreeClick(preference)
     }

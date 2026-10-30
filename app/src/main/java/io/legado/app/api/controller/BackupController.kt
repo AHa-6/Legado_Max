@@ -296,6 +296,15 @@ object BackupController {
             Backup.stageHighlightRuleBackgroundFiles(webBackupPath)
             Backup.stageBookCache(webBackupPath)
             Backup.stageBookChapterForCache(webBackupPath)
+            // 外观类：应用主题、顶栏配置包、底栏图标、气泡包、摘录分享模板
+            Backup.stageApplicationThemes(webBackupPath)
+            listOf(
+                Backup.TOP_BAR_DIR,
+                Backup.NAV_ICON_DIR,
+                Backup.BUBBLE_DIR,
+                Backup.SHARE_TEMPLATE_DIR,
+                Backup.WELCOME_DIR
+            ).forEach { Backup.stageExternalDir(webBackupPath, it) }
         }
 
         // 打包ZIP
@@ -507,6 +516,31 @@ object BackupController {
                     description = "高亮规则使用的自定义背景图片",
                     count = highlightRuleBgFiles.size,
                     size = highlightRuleBgSize,
+                ),
+            )
+        }
+
+        // 外观类整目录：按暂存目录统计（executeWebBackup 之后才有内容）
+        listOf(
+            Triple(Backup.APP_THEME_DIR, "应用主题", "应用主题及其背景图"),
+            Triple(Backup.TOP_BAR_DIR, "顶栏配置包", "日间/夜间顶栏配置包"),
+            Triple(Backup.NAV_ICON_DIR, "底栏图标", "自定义底栏使用的图标"),
+            Triple(Backup.BUBBLE_DIR, "气泡管理", "段评气泡包"),
+            Triple(Backup.SHARE_TEMPLATE_DIR, "摘录分享模板", "摘录分享 HTML 模板"),
+            Triple(Backup.WELCOME_DIR, "开屏管理", "自建的日间/夜间开屏"),
+        ).forEach { (dirName, displayName, description) ->
+            val dir = File(webBackupPath, dirName)
+            if (!dir.isDirectory) return@forEach
+            val files = dir.walkTopDown().filter { it.isFile }.toList()
+            val size = files.sumOf { it.length() }
+            totalSize += size
+            items.add(
+                BackupItemInfo(
+                    fileName = dirName,
+                    displayName = displayName,
+                    description = description,
+                    count = dir.listFiles()?.size ?: 0,
+                    size = size,
                 ),
             )
         }

@@ -200,6 +200,11 @@ object PreferKey {
     const val welcomeShowTextDark = "welcomeShowTextDark"
     const val welcomeShowIcon = "welcomeShowIcon"
     const val welcomeShowIconDark = "welcomeShowIconDark"
+    /** 夜间启动页显示时间（日间沿用 welcomeShowTime） */
+    const val welcomeShowTimeDark = "welcomeShowTimeDark"
+    /** 开屏管理：当前选中的日间/夜间开屏目录名 */
+    const val welcomePackageDay = "welcomePackageDay"
+    const val welcomePackageNight = "welcomePackageNight"
     const val pageTouchSlop = "pageTouchSlop"
     const val pageTouchClick = "pageTouchClick"
 
