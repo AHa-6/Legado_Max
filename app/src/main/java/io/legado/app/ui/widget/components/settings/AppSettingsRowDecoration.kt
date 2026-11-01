@@ -33,7 +33,7 @@ fun Modifier.appSettingsRowDecoration(
         if (showDivider) {
             Modifier.drawWithContent {
                 drawContent()
-                val thickness = AppDimens.dividerThickness.toPx()
+                val thickness = AppDimens.panelRowDividerThickness.toPx()
                 val centerY = size.height - thickness / 2f
                 drawLine(
                     color = dividerColor,

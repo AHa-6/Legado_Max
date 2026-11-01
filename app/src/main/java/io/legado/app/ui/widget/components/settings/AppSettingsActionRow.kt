@@ -3,17 +3,21 @@ package io.legado.app.ui.widget.components.settings
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -21,13 +25,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import io.legado.app.ui.theme.AppDimens
 import io.legado.app.ui.theme.composePanelShape
-import io.legado.app.ui.theme.pageAccentColor
+import io.legado.app.ui.theme.glassPanelDividerColor
+import io.legado.app.ui.theme.glassPanelIconContainerColor
+import io.legado.app.ui.theme.glassPanelIconContentColor
 import io.legado.app.ui.theme.pageSecondaryTextColor
 
 /**
@@ -75,7 +82,7 @@ fun AppSettingsActionRow(
             .semantics(mergeDescendants = true) {}
             .appSettingsRowDecoration(
                 shape = shape,
-                dividerColor = MaterialTheme.colorScheme.outlineVariant,
+                dividerColor = glassPanelDividerColor(),
                 showDivider = showDivider
             )
             .combinedClickable(
@@ -94,18 +101,37 @@ fun AppSettingsActionRow(
             )
     ) {
         if (leadingIconRes != null) {
-            Image(
-                painter = painterResource(leadingIconRes),
-                contentDescription = null,
-                colorFilter = ColorFilter.tint(
-                    // 与旧版设置项一致：行图标用强调色（旧实现见 lib/prefs/Preference.bindView
-                    // 里的 iconView.setColorFilter(context.accentColor)），危险操作行仍走错误色
-                    if (danger) MaterialTheme.colorScheme.error else pageAccentColor()
-                ),
+            // NG 的标志性观感有一半来自这个圆角色块：图标不再是裸描边，而是坐在一块
+            // 36dp、圆角 14dp、内边距 7dp 的浅色方块里（见 NG `NgSettingsIcon`）。
+            // 面板材质压成一层薄雾之后，裸图标会显得单薄，这个色块正好把视觉重心立起来。
+            Box(
                 modifier = Modifier
-                    .size(AppDimens.panelRowIconSize)
+                    .size(AppDimens.panelRowIconBoxSize)
+                    .clip(RoundedCornerShape(AppDimens.panelRowIconBoxCornerRadius))
+                    .background(
+                        if (danger) {
+                            MaterialTheme.colorScheme.errorContainer
+                        } else {
+                            glassPanelIconContainerColor()
+                        }
+                    )
                     .align(Alignment.CenterVertically)
-            )
+                    .padding(AppDimens.panelRowIconBoxPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(leadingIconRes),
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(
+                        if (danger) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            glassPanelIconContentColor()
+                        }
+                    ),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             Spacer(modifier = Modifier.width(AppDimens.panelRowIconSpacing))
         }
 

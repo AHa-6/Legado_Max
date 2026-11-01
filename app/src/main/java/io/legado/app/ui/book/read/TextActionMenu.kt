@@ -143,6 +143,18 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     /** 内容层容器，整块菜单的 Compose 根节点 */
     private val composeView = ComposeView(context)
 
+    /**
+     * popup 窗口真正的根视图（`PopupWindow` 的 decor），在 [show] 里赋值。
+     *
+     * Compose 建 recomposer 时并不是从 [composeView] 自己往上找 owner，而是先定位
+     * `findViewTreeComposeViewRoot()`——它会走到本窗口里**带 owner 标签的最高一层**，
+     * 一个都找不到就一路走到窗口根。PopupWindow 的 decor 天生不带任何 owner 标签，
+     * 于是 owner 必须装在 decor 上，而不是装在 [composeView] 上：装在 [composeView]
+     * 上时 Compose 往上一跳就越过了它，最终从 decor 那里查不到，抛出
+     * `ViewTreeLifecycleOwner not found from android.widget.PopupWindow$PopupDecorView`。
+     */
+    private var popupRoot: View? = null
+
     /** 菜单展示状态，刻意活在组合之外，见类注释 */
     private val uiState = UiState()
 
@@ -165,6 +177,8 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         // 在声明式写法里这三件都由 showingMore 一个布尔推导出来
         setOnDismissListener {
             uiState.showingMore = false
+            // 不及时放开会对已 dismiss 的窗口根保持强引用
+            popupRoot = null
         }
 
         composeView.setContent {
@@ -266,9 +280,6 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         endBottomY: Int
     ) {
         upMenu()
-        // popup 的 window 内容视图父链止于 PopupWindow 的 decor，Composition 建不出来时要抛
-        // ViewTreeLifecycleOwner not found，所以必须在 showAtLocation（触发 attach）之前装好 owner
-        composeView.installPopupViewTreeOwners(view)
         if (startTopY > 300) {
             // 上方空间充裕：菜单底部对齐选中文字顶部，向上生长，绝不遮挡
             showAtLocation(
@@ -286,6 +297,14 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 startBottomY
             )
         }
+        // owner 必须装在 popup 自己的窗口根（decor）上，原因见 popupRoot 注释。
+        //
+        // 时序是安全的：decor 只在 showAtLocation 内部才被创建并接管 composeView，而 Compose
+        // 的首次组合发生在下一次 traversal（Choreographer 帧回调，正是崩溃栈里
+        // ViewRootImpl.performTraversals → dispatchAttachedToWindow 那条路径），晚于本方法返回，
+        // 所以这里补装 owner 赶得上，不必提前。
+        popupRoot = composeView.rootView
+        popupRoot?.installPopupViewTreeOwners(view)
     }
 
     /**
@@ -620,13 +639,30 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
 }
 
 /**
- * 为 popup 里的 ComposeView 补上 ViewTreeOwner。
+ * 为 popup 的**窗口根**补上 ViewTreeOwner。
  *
- * PopupWindow 的内容视图父链止于自己的 decor，[androidx.lifecycle.findViewTreeLifecycleOwner]
- * 找不到 Activity 的 owner，Compose 就建不出 recomposer，所以这里从 `anchor`（宿主自己的视图，
- * 位于 Activity 视图树内）取，取不到再退到 [Context] 里找。
+ * ## 为什么必须装在 decor 上，装在 ComposeView 上无效
+ * Compose 建 recomposer 时不是从 ComposeView 自己就近往上找，而是两步走：
+ *
+ * 1. `View.contentChild` 沿父链往上，遇到 id 为 `android.R.id.content` 的父就返回其直接子 View；
+ *    PopupWindow 没有 content 容器，于是一路走到窗口根 —— 即 `PopupDecorView`。
+ * 2. `createLifecycleAwareWindowRecomposer(decor)` 在 **decor** 上执行
+ *    `findViewTreeLifecycleOwner()`，取不到就抛
+ *    `ViewTreeLifecycleOwner not found from android.widget.PopupWindow$PopupDecorView`
+ *    （崩溃栈里那个 `$this` 正是 decor，不是 ComposeView，即为此证据）。
+ *
+ * owner 装在 ComposeView 上时，第 1 步已经把查询点抬到 decor，第 2 步自然查不到。
+ *
+ * ## 三个 owner 都要装
+ * `findViewTreeComposeViewRoot()` 用
+ * `min(lifecycleOwnerDepth, savedStateRegistryOwnerDepth)` 决定在哪一层查 owner：
+ * 只装 Lifecycle 而漏掉 SavedStateRegistry，maxDepth 会变成
+ * `Int.MAX_VALUE`，查询点同样落到 decor 上失败（报错文案不同，成因一致）。
+ *
+ * owner 从 `anchor`（宿主 Activity 自己的视图，位于 Activity 视图树内）取，
+ * 取不到再退到 [Context] 里找。
  */
-private fun ComposeView.installPopupViewTreeOwners(anchor: View) {
+private fun View.installPopupViewTreeOwners(anchor: View) {
     val ownerContext = context.findPopupOwnerContext()
     val lifecycleOwner = anchor.findViewTreeLifecycleOwner() ?: ownerContext as? LifecycleOwner
     val viewModelStoreOwner =

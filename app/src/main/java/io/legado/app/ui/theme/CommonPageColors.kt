@@ -294,133 +294,116 @@ fun pageMutedIconTint(): Color {
 @Composable
 fun pageTopBarContainerColor(): Color = MaterialTheme.colorScheme.secondary
 
-
 /**
- * ========== 液态玻璃面板色系 (参考 NG 液态玻璃简化版) ==========
- * 用于「我的」页面等设置页的玻璃质感卡片，提供渐变、高光、深度边缘等多层效果。
+ * ========== 设置面板材质（对齐 NG 的静态玻璃配方） ==========
+ *
+ * 这组颜色决定「我的」、视频设置等页面的面板观感，取值刻意照搬 NG 在其
+ * `NgSettingsCardSurface` 里对 API < 31 设备使用的那一套：
+ *
+ * - 容器：**单层**半透明白（昼 `#70FFFFFF` / 夜 `#3AFFFFFF`）。
+ * - 描边：细发丝线（昼 `#5AFFFFFF` / 夜 `#26FFFFFF`），只用来勾出边界。
+ * - 图标底：#66FFFFFF / 夜 #33FFFFFF，配圆角方块做成 NG 那种「色块图标」。
+ *
+ * ## 为什么不再叠五层
+ * API 31 以下没有 RenderEffect / RuntimeShader，真模糊做不出来。用多层半透明去
+ * 「假装」玻璃时，每层都自带 alpha，叠在壁纸上会把背景压成一块脏灰；而且渐变方向
+ * 与壁纸内容无关，看上去像污渍而不是玻璃。NG 在同样这些设备上走的就是
+ * 「一层薄雾 + 一道细边」，观感反而干净——面板好不好看与它是不是大面板无关，
+ * 差别只在这套材质配方。
  */
 
+/** 墨水屏：不做任何半透明叠加，直接用不透明底色保证可读性 */
+private val glassIsEInk: Boolean get() = AppConfig.isEInkMode
+
+/** 夜间主题 */
+private val glassIsNight: Boolean get() = AppConfig.isNightTheme
+
 /**
- * 玻璃面板顶部容器色（渐变上半部分）。
+ * 面板容器色：单层薄雾。
+ *
+ * 昼 #70FFFFFF（alpha 112/255）、夜 #3AFFFFFF（alpha 58/255），与 NG 的
+ * `ng_settings_item` 同值；墨水屏退回不透明 surface。
  */
 @Composable
 fun glassPanelContainerTopColor(): Color {
-    val background = MaterialTheme.colorScheme.background
-    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
-    val primary = MaterialTheme.colorScheme.primary
-    
-    // 顶部色：surfaceVariant 混合少量 primary，增加色彩层次
-    val topBlend = if (background.luminance() < 0.18f) {
-        // 暗色模式：surfaceVariant 为主，混合 primary 增加色彩
-        lerp(surfaceVariant, primary, 0.12f)
-    } else {
-        // 日间模式：更亮的混合
-        lerp(surfaceVariant, primary, 0.08f)
-    }
-    
-    return if (background.luminance() < 0.18f) {
-        lerp(topBlend, Color.White, 0.06f).copy(alpha = 0.82f)
-    } else {
-        lerp(topBlend, Color.Black, 0.04f).copy(alpha = 0.88f)
-    }
+    if (glassIsEInk) return MaterialTheme.colorScheme.surface
+    return Color.White.copy(alpha = if (glassIsNight) 58f / 255f else 112f / 255f)
 }
 
 /**
- * 玻璃面板底部容器色（渐变下半部分）。
+ * 面板容器色下半部分。
+ *
+ * 与 [glassPanelContainerTopColor] 取同一个值——原来这里做的是「顶亮底深」的对角渐变，
+ * 正是那股脏灰感的来源之一，现在刻意压成平色，只靠描边和圆角表达材质。
  */
 @Composable
-fun glassPanelContainerBottomColor(): Color {
-    val background = MaterialTheme.colorScheme.background
-    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
-    val primary = MaterialTheme.colorScheme.primary
-    
-    // 底部色：稍微偏向 primary，形成渐变深度
-    val bottomBlend = if (background.luminance() < 0.18f) {
-        lerp(surfaceVariant, primary, 0.18f)
-    } else {
-        lerp(surfaceVariant, primary, 0.14f)
-    }
-    
-    return if (background.luminance() < 0.18f) {
-        lerp(bottomBlend, Color.White, 0.04f).copy(alpha = 0.76f)
-    } else {
-        lerp(bottomBlend, Color.Black, 0.05f).copy(alpha = 0.84f)
-    }
-}
+fun glassPanelContainerBottomColor(): Color = glassPanelContainerTopColor()
 
-/**
- * 玻璃面板高光色（边缘高亮）。
- */
-@Composable
-fun glassPanelHighlightColor(): Color {
-    val background = MaterialTheme.colorScheme.background
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
-    
-    val highlightBase = if (background.luminance() < 0.18f) {
-        lerp(onSurface, Color.White, 0.28f)
-    } else {
-        lerp(onSurfaceVariant, Color.White, 0.72f)
-    }
-    
-    return if (background.luminance() < 0.18f) {
-        highlightBase.copy(alpha = 0.32f)
-    } else {
-        highlightBase.copy(alpha = 0.55f)
-    }
-}
-
-/**
- * 玻璃面板边框色。
- */
+/** 面板描边色（发丝线）：昼 #5AFFFFFF / 夜 #26FFFFFF */
 @Composable
 fun glassPanelBorderColor(): Color {
-    val outlineVariant = MaterialTheme.colorScheme.outlineVariant
-    
-    return if (outlineVariant.luminance() < 0.3f) {
-        // 暗色模式下，边框需要稍微提亮
-        lerp(outlineVariant, Color.White, 0.26f).copy(alpha = 0.45f)
-    } else {
-        // 日间模式，边框稍微加深
-        lerp(outlineVariant, Color.Black, 0.18f).copy(alpha = 0.40f)
-    }
+    if (glassIsEInk) return MaterialTheme.colorScheme.outline
+    return Color.White.copy(alpha = if (glassIsNight) 38f / 255f else 90f / 255f)
 }
 
 /**
- * 玻璃面板深度边缘色（底部暗色阴影带）。
+ * 表面光泽色。
+ *
+ * 固定透明：NG 的设置卡片不画顶部光泽，这一层在深色壁纸上尤其容易显出「油膜」感。
  */
 @Composable
-fun glassPanelDepthEdgeColor(): Color {
-    val background = MaterialTheme.colorScheme.background
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
-    
-    return if (background.luminance() < 0.18f) {
-        // 暗色模式：黑色深度边缘
-        Color.Black.copy(alpha = 0.22f)
-    } else {
-        // 日间模式：深灰色深度边缘
-        lerp(surfaceVariant, onSurface, 0.35f).copy(alpha = 0.18f)
-    }
+fun glassPanelSurfaceGlossColor(): Color = Color.Transparent
+
+/**
+ * 边缘高光色。
+ *
+ * 固定透明：斜向高光是叠层时代最主要的一层「假反光」，NG 的设置卡片没有任何高光描边。
+ */
+@Composable
+fun glassPanelHighlightColor(): Color = Color.Transparent
+
+/**
+ * 深度边缘色。
+ *
+ * 固定透明：底部暗色带是为了营造厚度，但它把卡片下沿糊成一条脏边，NG 不用。
+ */
+@Composable
+fun glassPanelDepthEdgeColor(): Color = Color.Transparent
+
+/**
+ * 行首图标底色（做成圆角色块，NG 的标志性观感）。
+ *
+ * 昼 #66FFFFFF；夜间用容器色系（对应 NG 的 selectedContainer），墨水屏用 surfaceVariant。
+ */
+@Composable
+fun glassPanelIconContainerColor(): Color = when {
+    glassIsEInk -> MaterialTheme.colorScheme.surfaceVariant
+    glassIsNight -> MaterialTheme.colorScheme.secondaryContainer
+    else -> Color.White.copy(alpha = 102f / 255f)
 }
 
 /**
- * 玻璃面板表面光泽色（顶部高光渐变）。
+ * 行首图标前景色。
+ *
+ * 昼间走页面强调色（对应 NG 的 `colors.primary`）；夜间走 onSecondaryContainer；
+ * 墨水屏走 onSurfaceVariant。
  */
 @Composable
-fun glassPanelSurfaceGlossColor(): Color {
-    val background = MaterialTheme.colorScheme.background
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
-    
-    val glossBase = if (background.luminance() < 0.18f) {
-        lerp(onSurfaceVariant, Color.White, 0.15f)
-    } else {
-        lerp(onSurfaceVariant, Color.White, 0.65f)
-    }
-    
-    return if (background.luminance() < 0.18f) {
-        glossBase.copy(alpha = 0.12f)
-    } else {
-        glossBase.copy(alpha = 0.20f)
-    }
+fun glassPanelIconContentColor(): Color = when {
+    glassIsEInk -> MaterialTheme.colorScheme.onSurfaceVariant
+    glassIsNight -> MaterialTheme.colorScheme.onSecondaryContainer
+    else -> MaterialTheme.colorScheme.primary
+}
+
+/**
+ * 面板内行分隔线颜色。
+ *
+ * 面板底已经是半透明白，行分隔线若用 Material 的 `outlineVariant`（本身偏灰）会显出一条
+ * 比外框更重的灰线，把薄雾切成一块块硬格子。这里改成与描边同源的一点点白，
+ * 在昼夜两种底色上都只是「轻轻一道」。
+ */
+@Composable
+fun glassPanelDividerColor(): Color {
+    if (glassIsEInk) return MaterialTheme.colorScheme.outlineVariant
+    return Color.White.copy(alpha = if (glassIsNight) 22f / 255f else 54f / 255f)
 }

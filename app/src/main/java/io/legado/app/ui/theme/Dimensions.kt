@@ -34,8 +34,8 @@ object AppDimens {
     /** 分组面板首个面板距列表顶部的间距 */
     val panelTopPadding: Dp = 8.dp
 
-    /** 面板行的最小高度，保证命中区不小于无障碍要求的 48dp */
-    val panelRowMinHeight: Dp = 60.dp
+    /** 面板行的最小高度，保证命中区不小于无障碍要求的 48dp；64dp 对齐 NG 设置项 */
+    val panelRowMinHeight: Dp = 64.dp
 
     /** 面板行内容的水平内边距 */
     val panelRowHorizontalPadding: Dp = 16.dp
@@ -43,14 +43,23 @@ object AppDimens {
     /** 面板行内容的垂直内边距 */
     val panelRowVerticalPadding: Dp = 10.dp
 
-    /** 行内图标尺寸 */
-    val panelRowIconSize: Dp = 22.dp
+    /** 行内图标尺寸（图标本身，不含圆角色块） */
+    val panelRowIconSize: Dp = 20.dp
+
+    /** 行内图标容器的尺寸，对应 NG `NgSettingsIcon` 的 36dp 色块 */
+    val panelRowIconBoxSize: Dp = 36.dp
+
+    /** 行内图标容器圆角，对应 NG `NgSettingsIcon` 的 RoundedCornerShape(14dp) */
+    val panelRowIconBoxCornerRadius: Dp = 14.dp
+
+    /** 图标在色块内的内边距，对应 NG `NgSettingsIcon` 的 padding(7dp) */
+    val panelRowIconBoxPadding: Dp = 7.dp
 
     /** 行内图标与文本之间的间距 */
     val panelRowIconSpacing: Dp = 14.dp
 
-    /** 行内标题与副标题之间的间距 */
-    val panelRowTitleSpacing: Dp = 8.dp
+    /** 行内标题与副标题之间的间距，对应 NG 设置项的 Arrangement.spacedBy(4dp) */
+    val panelRowTitleSpacing: Dp = 4.dp
 
     /** 行内尾部控件与文本之间的间距（如开关） */
     val panelRowTrailingSpacing: Dp = 8.dp
@@ -63,6 +72,14 @@ object AppDimens {
 
     /** 面板描边与行分隔线的粗细 */
     val dividerThickness: Dp = 1.dp
+
+    /**
+     * 面板行分隔线的粗细。
+     *
+     * 0.6dp 与 NG 的 `borderWidth = 0.6.dp` 同值：面板已经是「一层薄雾 + 一道细边」的轻材质，
+     * 行内再用 1dp 的分隔线会显得比面板外框还重，层次会翻过来。
+     */
+    val panelRowDividerThickness: Dp = 0.6.dp
 
     // ── 缓存管理页 ──
 
