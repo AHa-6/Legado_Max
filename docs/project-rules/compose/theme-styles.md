@@ -1,0 +1,255 @@
+# Compose UI 规范 — 主题与样式
+
+> 原 `UI-ARCHITECTURE.md`（2026-08-19）拆分产物：§7，章节编号沿用原编号，跨文件引用按「文件名 §编号」格式书写。生效范围、执行方式、老代码策略等通用约定见 [README.md](./README.md)。
+> **最后更新**：2026-10-11
+
+---
+
+## 7. 主题与样式
+
+### 7.1 颜色使用
+
+- **必须**优先使用 `MaterialTheme.colorScheme.xxx` 获取色值。
+- **禁止**直接调用 `colorResource(R.color.xxx)` 绕过主题系统。（例外：`Color.Transparent`、`Color.Black`、`Color.White` 等标准色允许直用）
+- **禁止** 在 Composable 函数体内用 `Color(0xFFxxxxxx)` 硬编码，色值必须来自 `ThemeEntity` 或 `MaterialTheme`。
+
+### 7.2 魔法数字
+
+- 所有 dimens 必须集中定义在 `ui/theme/Dimensions.kt` 的 `AppDimens`（**已建立**，目录树见 `structure.md` §1；原就地定义的 `PageDimens` 已并入并删除，禁止再另起平行对象）。
+- 所有 shapes 必须集中定义在 `ui/theme/ComposeShapes.kt`（**已建立**）。圆角值不得在 Compose 侧另设常量，一律经 `composePanelShape()` / `composeActionShape()` 从 `lib/theme/UiCorner` 取，与 XML 侧保持同源。
+- **禁止**在 Composable 体内裸写 `16.dp`、`12.dp`、`0.8f`。
+- 动画参数（时长档位、easing、spring、无限动画）**必须**遵循 §7.6，禁止调用点随手写 `tween(200, ...)`、`tween(600, ...)` 这类无档位时长。
+- **禁止**自定义 `CubicBezier` / `keyframes` 曲线散落多处，新增自定义曲线必须集中定义在 `ui/theme/AnimationSpecs.kt`（**目标态文件，首次落地时创建**）并注释用途。
+
+```kotlin
+// ui/theme/Dimensions.kt（目标态示例，落地时创建）
+object AppDimens {
+    val cardCornerRadius = 12.dp
+    val listItemVerticalPadding = 12.dp
+    val listItemHorizontalPadding = 16.dp
+    val listItemIconSpacing = 16.dp
+}
+
+// ui/theme/Shapes.kt（同上）
+val AppShapes = Shapes(
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp)
+)
+```
+
+### 7.3 图片加载
+
+> **技术选型：本项目图片框架统一为 Glide**（存量技术栈，全项目已依赖）。不引入 Coil / Fresco 等第二套框架；如未来要换，属于架构级决策，必须全局迁移，禁止单个 PR 局部混用。
+
+- **必须**走 `ui/widget/components/` 下的统一封装组件加载图片，内部用 Glide 的 **Drawable 链路**。书籍/分组封面已落地为 `AppBookCover`（**已建立**，取图优先级与 View 版 `CoverImageView` 一致：封面图集 → 真实图片 → HTML 模板封面 → 默认封面，失败叠加书名作者）；一般图片（订阅源 / 书源图标等）已落地为 `AppImage`（**已建立**，按控件实际尺寸 `override` 降采样，加载中与失败各有兜底图）。两者共用同一套 Drawable 链路与 `AppDrawablePainter`；新 Compose 代码一律走这两个组件，按下述链路模式实现，禁止用 View 版 API 过渡：
+
+```kotlin
+Glide.with(context)
+    .load(source)                                        // RequestBuilder<Drawable>，不要 asBitmap()
+    .apply(RequestOptions().override(widthPx, heightPx)) // 显式尺寸，禁止全尺寸解码
+    .into(pendingTarget)                                 // CustomTarget<Drawable>
+```
+
+> **为什么是 Drawable 而不是 Bitmap**：`asBitmap()` 对 GIF / 动画 WebP 只解出第一帧，动图在封面上不动——首页 `GlideImage` 与旧 View 版 `CoverImageView` 走的都是 Drawable，所以只有单独换了链路的页面出问题。静态图（含透明 PNG）两种链路行为一致。
+
+- **必须**用自持的 `CustomTarget<Drawable>` 承接结果，再交给自实现的 Drawable Painter 渲染（`Image(painter = ...)`；参考 `AppBookCover.kt` 里的 `AppDrawablePainter`——依赖里的 glide-compose 只有 `GlideImage`，没有可直接复用的 Drawable→Painter）。取消时 `clear()` target 取消 in-flight 请求——页面滑走后 Glide 继续解码就是白烧内存和 CPU。
+- **必须**在拿到 `Animatable`（GifDrawable / AnimatedImageDrawable）后显式 `setVisible(true, true)` + `start()`：View 版由 ImageView 代劳，Compose 侧没有这一层，漏了动图依旧不动。
+- **禁止**在 Composable / ViewModel 里手写 `withContext(Dispatchers.IO) { BitmapFactory.decode... }` 自己解码 bitmap 塞 `Image()`——缓存、采样率、请求去重、取消逻辑全要自己维护，纯造轮子。
+- **禁止**在 Compose 层使用 View 版 API（`Glide.with(...).into(imageView)`）；老 XML 代码里的存量调用不动，新代码一律走上面的链路。
+
+### 7.4 字体与排版
+
+> 档位载体：`ui/theme/AppTypography.kt` 的 `rememberAppTypography()`（**已建立**），经 `LegadoTheme` 注入 `MaterialTheme.typography`；字号与权重沿用 Material3 默认档位，本项目不另设字号体系。
+
+- **必须**通过 `MaterialTheme.typography.xxx` 语义档位取字体样式；**禁止**在 Composable 内直接调 `FontFamily` 构建、裸写 `fontSize = X.sp`（动态字号豁免见本节末）。
+- **界面字体**（用户设置的衬线/等宽，`AppConfig.systemTypefaces`）由 `rememberAppTypography()` 织入 body / label 档位，title / headline / display 档位保持系统默认——与 View 侧 `applyUiBodyTypefaceDeep()` 跳过标题角色同语义。所有 Compose 界面必须经 `LegadoTheme` 包裹（当前无绕过点），禁止自行 `MaterialTheme(colorScheme = ...)` 把排版注入甩掉。
+- **字号选档对照**（裸 `13.sp` 这类档位外取值，迁移时按就近原则归档；最小档位到 `labelSmall`）：
+
+  | 档位          | 字号 | 默认权重 | 用途                         |
+  | ------------- | ---- | -------- | ---------------------------- |
+  | `titleLarge`  | 22sp | Normal   | 页面大标题（TopAppBar 默认） |
+  | `titleMedium` | 16sp | Medium   | 卡片/列表项标题              |
+  | `titleSmall`  | 14sp | Medium   | 小标题、强调行               |
+  | `bodyLarge`   | 16sp | Normal   | 正文主文本                   |
+  | `bodyMedium`  | 14sp | Normal   | 正文次要文本                 |
+  | `bodySmall`   | 12sp | Normal   | 辅助说明、时间戳             |
+  | `labelLarge`  | 14sp | Medium   | 按钮文字                     |
+  | `labelMedium` | 12sp | Medium   | 小标签                       |
+  | `labelSmall`  | 11sp | Medium   | 角标、最小档位               |
+
+- **权重**：正文默认 Normal 不写 `fontWeight`；显式设置只允许 `FontWeight.Medium` / `SemiBold` / `Bold` 三档，`Black` 禁用（存量 2 处不追溯）；`titleMedium` / `titleSmall` 档位已带 Medium，调用点不再重复设置。
+- **豁免**：阅读页正文排版等动态字号（用户设置/进度驱动，如 `ChapterProvider`）不适用语义档位。
+
+### 7.5 字符串资源规范
+
+- **必须**所有用户可见文案通过 `stringResource(R.string.xxx)` 获取，禁止在 Composable 内硬编码中文字符串。"用户可见"包括 `contentDescription`——图标无障碍描述同样禁止硬编码中文，机器检测覆盖该参数（见 `migration-review.md` §14.1）。
+- **禁止**在 ViewModel 里拼接展示文案（如 `"已复制" + item.name`）。ViewModel 只发数据，文案拼接在 UI 层完成。
+- **推荐** string resource 命名保持简洁可读，允许使用缩写或分层前缀（用斜杠表示层级分组），示例：`theme_title`、`theme_card_delete_confirm`、`config/theme/list_empty`。
+- **例外**：纯调试用的 `Log` 消息、`TODO` 注释中的文案不需要走 string resource。
+
+```kotlin
+// ❌ 违规
+Text("已复制 ${theme.name}")
+
+// ✅ 正确
+Text(stringResource(R.string.theme_copied, theme.name))
+```
+
+### 7.6 动画规范
+
+> 存量动画用法总体合规（`AnimatedVisibility`、`animateColorAsState`、`graphicsLayer` 旋转、`rememberInfiniteTransition` shimmer），本节是**固化现状 + 收口时长档位 + 约束未来代码**，不是补课。
+
+#### 7.6.1 时长与曲线档位（强制）
+
+时长**只允许三档**，禁止 `tween(200, ...)`、`tween(600, ...)` 这类档位外取值：
+
+| 档位     | 时长  | 用途                                        | 曲线                  |
+| -------- | ----- | ------------------------------------------- | --------------------- |
+| 微交互   | 150ms | 按压缩放、颜色态切换、`animateColorAsState` | `FastOutSlowInEasing` |
+| 标准     | 300ms | 展开/收起、`AnimatedVisibility` 进出场      | `FastOutSlowInEasing` |
+| 进场过渡 | 450ms | 页面级 `Crossfade`、大图位替换              | `FastOutSlowInEasing` |
+
+- **弹性动画**统一 `SpringSpec(stiffness = Spring.StiffnessMediumLow)`（存量 `CheckSourceScreen` 已在用，固化）；禁止调用点散落 `spring(...)` 随手传 stiffness/dampingRatio。
+- **禁止**手写帧循环（`withFrameNanos` / `while` 循环）实现动画——无限动画一律 `rememberInfiniteTransition`，一次性动画一律 `animate*AsState` 或 `Animatable`。
+- `Animatable` 手动驱动的场景（手势联动等）必须在 `DisposableEffect` 的 `onDispose` 里 `cancel()`。
+
+#### 7.6.2 动画属性选择（性能相关）
+
+- 位移、缩放、旋转、透明度**必须**走 `graphicsLayer` / `Modifier.alpha` / `Modifier.scale`，禁止对参与 layout 的属性（`padding`、`size`、`offset` modifier 链上的 dp 值）做逐帧动画——layout 脏化 vs 只脏 GPU 图层，同屏 20 个 item 同时动时帧率差一倍以上。
+- 高度展开/收起类（必须动 layout 的场景）优先 `AnimatedVisibility` + `expandVertically/fadeIn` 组合，其次 `animateContentSize`；禁止 `animateDpAsState` 逐帧改 `height = x.dp` 的裸写法。
+
+#### 7.6.3 无限动画生命周期（强制）
+
+- `rememberInfiniteTransition` **必须**传 `label` 参数（无障碍：TalkBack 可感知，且 composition 离开时自动取消）。
+- 无限动画组件**必须**保证离开 composition 即停（`AnimatedVisibility` 包裹的退出分支要覆盖到）。禁止在 `LaunchedEffect` 里用 `while(true) { delay(16); ... }` 自转——白烧 CPU + 电池，Systrace 上一眼假。
+
+#### 7.6.4 系统"减少动态效果"（强制）
+
+- 读取 `Settings.Global.ANIMATION_SCALE`，`CompositionLocal`（建议 `LocalAnimationScale`，Application 初始化读一次 + `ContentObserver` 监听变化）下发。
+- `scale < 0.5f` 时：装饰性动画（shimmer、转圈、背景流动）**时长归零直接 snap 到终态或静态样式**；功能性动画（页面进出场）保留。
+- **禁止** Composable 内直接读 `Settings.Global`（读 ContentResolver 有 IPC 成本，不能进 composition 热路径）。
+
+### 7.7 顶栏（TopBar）统一规范
+
+> 本项目的顶栏颜色/背景/阴影统一由 `TopBarConfig`（用户可配置：样式 default/regular、主色 tagBarColor、透明度 tagBarAlpha、常规样式壁纸 wallpaper）驱动。Compose 与 View 两套体系各有其接入入口，**禁止**在调用点直接硬编码 `MaterialTheme.colorScheme.secondary` 或 `ThemeStore.primaryColor` 绕过统一体系。
+
+#### 7.7.1 Compose 页面顶栏（强制）
+
+- **必须**通过 `pageTopBarColors()`（`ui/theme/CommonPageColors.kt`）取色，返回 `PageTopBarColors`（containerColor/contentColor/cornerRadius/shadowElevation/wallpaperFile/wallpaperAlpha）。
+- **必须**用 `Modifier.pageTopBarBackground(colors)` 承载顶栏容器（fillMaxWidth + shadow + clip + background + 壁纸），将 `containerColor` 设为 `Color.Transparent` 并把图标/标题色设为 `topBarColors.contentColor`（避免容器色被 TopAppBar 自身重绘覆盖）：
+
+```kotlin
+val topBarColors = pageTopBarColors()
+TopAppBar(
+    modifier = Modifier.pageTopBarBackground(topBarColors),
+    colors = TopAppBarDefaults.topAppBarColors(
+        containerColor = Color.Transparent,
+        scrolledContainerColor = Color.Transparent,
+        navigationIconContentColor = topBarColors.contentColor,
+        titleContentColor = topBarColors.contentColor,
+        actionIconContentColor = topBarColors.contentColor
+    ), ...
+)
+```
+
+- **禁止**再使用旧 API `pageTopBarContainerColor()`、**禁止**手写 `MaterialTheme.colorScheme.secondary` 作为顶栏容器色。
+- 阴影规则（`shadowElevation`）：`transparentNavBar` → `0.dp`；`alphaPercent < 100` → `0.1.dp`；否则用 `context.elevation`。Compose 侧（`CommonPageColors.kt`）与 View 侧（`TitleBarConfig.kt`）**均已**按此规则实现，**禁止**再引入"regular 风格 + 圆角 → 阴影强制置零"的分支（历史 bug，两套体系均已修复）。
+
+#### 7.7.2 Dialog / 浮层顶栏
+
+- 在 `Dialog` / `Surface` 浮层内，**禁止**用 `pageTopBarBackground` modifier（其内部依赖 `context.transparentNavBar`，在浮层语义下可能不符预期）。
+- **必须**改用 `pageTopBarColors().containerColor` 方案：取 `val topBarColors = pageTopBarColors()`，`TopAppBar` 的 `containerColor = topBarColors.containerColor`，`titleContentColor` / `navigationIconContentColor` / `actionIconContentColor` 全用 `topBarColors.contentColor`（同 §7.7.1 示例，仅容器色不同：填实色而非 Transparent + pageTopBarBackground）。
+
+#### 7.7.3 View 体系顶栏
+
+- View 体系页面/弹窗顶栏 **必须**统一走 `TitleBar`（`ui/widget/TitleBar.kt`）`applyTopBarConfig()`，由 `TopBarConfig` 计算背景/圆角/壁纸/文字色。
+- 裸 `androidx.appcompat.widget.Toolbar` 如需接入统一色，**必须**通过 `TopBarConfig` 计算容器色（`withOpacity(backgroundColor, alphaPercent)`，`STYLE_REGULAR` 用 `resolveBackgroundColor` / `wallpaperAlpha`，否则 `tagBarColor ?: primaryColor` / `tagBarAlpha`），**禁止**直接 `setBackgroundColor(primaryColor)` 写死。
+- `TitleBar` 上的 `skipTopBarConfig="true"` 是「有意跳过统一主题」的显式声明，使用前必须确认意图（见 §7.7.5）。
+
+#### 7.7.4 顶栏前景取色（强制）
+
+> 顶栏里的标题、副标题、二级标签栏、搜索框、返回图标、菜单/overflow 图标**必须同色**，且颜色要跟着**顶栏实际压着的底色**走——两套取色路径（图标按主题主色、文字按顶栏背景）会直接表现为"文字与图标不同色"和"图标与底色撞色"。
+
+- **必须**走唯一入口 `resolveTopBarContentColor(context, topBarTheme, topBarBackground, topBarWallpaperColor)`（`ui/widget/TitleBarConfig.kt`）：View 侧由 `TitleBar.topBarContentColor()` 调用，Compose 侧由 `pageTopBarColors()` 调用；`topBarBackground` 传**顶栏自身底色（含 alpha）**，顶栏完全透明或底色解析不出来时传 `null`；`topBarWallpaperColor` 传**顶栏自带壁纸的平均色按 `wallpaperAlpha` 带过 alpha 的结果**（`TopBarConfig.wallpaperAverageColor(file)?.let { TopBarConfig.withOpacity(it, alpha) }`），没叠壁纸时传 `null`。
+- 取色规则（按可靠性排序，实现在 `resolveTopBarContentColor` 内）：① 顶栏底色与顶栏壁纸两层（**各自带透明度**）**逐层合成**成"前景实际压着的颜色"（合成顺序=绘制顺序，见 `resolveTopBarSurfaceColor`），再按该颜色的亮度取深浅，**优先于**页面写死的 `themeMode`。只按其中一层判定一定翻车：2026-10-10 ~ 12 的"顶栏文字看不清"就是只拿壁纸原图亮度判定，把"44% 透明壁纸 + 米白底色"判成深底而配了白字压浅底。② 顶栏完全没有底色（"顶栏颜色透明" / 未配顶栏背景）→ 页面显式声明的 `themeMode="dark/light"` 说了算（注意 `MenuExtensions.getMenuColor` 在"透明底栏"开启时会忽略该声明、改按 `context.backgroundColor` 亮度取色，这是既有行为）；③ 都没声明 → 按**顶栏背后实际显示的窗口背景**取色：有主界面壁纸时用壁纸的平均色（`ThemeConfig.getImageAverageColor`，不要退回"按亮度取纯黑白"——底色/壁纸是半透明压上去的，黑白近似会把中性色调的壁纸推偏而贴着阈值判反），没有壁纸时用主题背景色。
+- 亮度/颜色采样统一走 `ThemeConfig`（24×24 缩略图，失败也缓存，避免重组热路径反复解码；缓存键＝路径 + 修改时间 + 文件大小 + **裁切比例**，换个裁切口径不会误用旧结果）：`getImageLuminance(path)` 取整图平均亮度（窗口背景用），`getImageAverageColor(path, cropAspectRatio)` 取平均色、并可按宽高比只统计**居中裁切**后实际会显示的区域。顶栏壁纸的平均色**必须**走后者（`TopBarConfig.wallpaperAverageColor`，按顶栏约 5:1 估计可见条带）：顶栏又宽又扁，壁纸纵向只露出中间一条，宽图上下常见的留白/黑边从不出现在顶栏上，按整图平均会把它们一起算进去。
+- View 侧的取色依据直接来自顶栏那块背景 Drawable：`TitleBar.topBarContentColor()` 用 `Drawable.resolveSolidColor()` 把「圆角底色 + 顶栏壁纸」的 `LayerDrawable` **逐层合成**回一个代表色（`TopBarWallpaperDrawable.solidColor` 提供壁纸层的平均色 + 当前 alpha）。这样"顶栏背景被谁改过"（透明导航栏 / 墨水屏纸白 / 页面自己置透明）都能自动跟着走；**禁止**再在取色处按分支重算一遍底色。
+- **禁止**新增第二处取色：图标着色（`TitleBar.attachToActivity`）、标签栏/搜索框（`applyTopBarChildConfig`）、顶栏内的自定义子视图（如书架的分组名与箭头，见 `BookshelfFragment1.updateTitleColor`）都**必须**复用 `topBarContentColor()`，不得再出现 `getMenuColor(context, topBarTheme)` 或 `context.primaryTextColor` 直连。
+- **必须**：页面顶栏的菜单（含 `SearchView` 形式的 actionView）用 `Menu.applyTopBarTint(context)`（`utils/MenuExtensions.kt`）着色，**不要**用 `applyTint(context)`——后者按"主题主色 / 背景色"取色，与标题不同源。"我的"里的子界面正是这种"标题在 Activity 的 TitleBar 上、菜单在 Fragment 的 MenuProvider 里"的结构，`applyTint(context)` 还会在 Activity 之后执行并盖掉正确取色，表现为"标题深色、图标与搜索框浅色"；只有对话框这类没有页面顶栏的场景才继续用 `applyTint`。
+- **例外**：`skipTopBarConfig` 的页面（阅读页 / 漫画页菜单，见 §7.7.5）**不吃**这套统一取色。`BaseActivity.onCreateOptionsMenu` 遇到这类顶栏会回退到按主题取色，顶栏与菜单的前景色由页面自己负责（阅读页用 `ReadMenu.titleBarContentColor`，并在 `onPrepareOptionsMenu` 里给菜单图标上色）；这类页面的状态栏图标也要跟随**它们自己的顶栏底色**（阅读页：正文态按阅读背景明暗，菜单态按菜单顶栏底色），不能套用全局顶栏配置。
+- **注意**：actionView 形式的菜单项（`Menu.iconItemOnLongClick` 把图标塞进 `ImageButton`）不吃 `item.icon` 上的 tint——`setTintMutate` 会 mutate 出新 Drawable 而 ImageButton 还拿着旧实例，所以 `applyTint` 会给其中的 ImageButton 重设一次 Drawable。
+- 顶栏背景被调用方另行改掉的页面（书籍详情页/音频播放页把顶栏改透明露出封面），改完背景**必须**调 `TitleBar.refreshTopBarContentColor()` 重算前景色，否则标题会停在"不透明底"时的旧配色上、与随后重算的图标不同色。
+- 主界面与"我的"子界面的顶栏常压在**主界面壁纸**上（顶栏透明 + 页面背景色透明），只看 `context.backgroundColor` 会在"浅色背景色 + 深色壁纸"（或反之）时取反，这是顶栏撞色的主要来源。
+
+#### 7.7.5 有意例外（改前必读，禁止"修掉"）
+
+以下两处顶栏**有意**不走统一主题，属于设计决策而非 bug，**禁止**在无需求变更时把它们"接入"统一色：
+
+- **书籍详情页**（`ui/book/info/BookInfoActivity.kt`）：顶栏被强制为透明（`binding.titleBar.setBackgroundResource(R.color.transparent)`），使封面图从顶栏后方露出。改成统一色会破坏封面展示；但**前景色**仍走统一入口——改完背景要调 `refreshTopBarContentColor()` 重算（见 §7.7.4），否则标题与图标会不同色。
+- **书籍阅读页**（`ui/book/read/ReadMenu.kt`）：`view_read_menu.xml` 中 TitleBar 声明 `skipTopBarConfig="true"`。immersive 菜单顶栏跟随**阅读页背景色**（`ReadBookConfig.durConfig.curBgStr()`），非 immersive 用 `primaryColor`——跟随阅读主题是有意为之。
+
+> 若确有需求要统一这两处（如"阅读页也想用全局顶栏壁纸"），需作为独立需求评审，禁止顺手改。
+
+### 7.8 主题切换与页面重建
+
+> 背景（完整证据链见 `docs/archive/主题列表应用主题后UI卡死根因分析.md` §15，2026-09-10 模拟器实测）：
+> 日夜主题切换经 `AppCompatDelegate.setDefaultNightMode` 会触发 AppCompat **系统级再启动**（ActivityThread 直接重建新实例），
+> 在此路径及 `Activity.recreate()` 原地重建路径下，重建出的 Compose 实例存在可达缺陷：**首帧组合正常，随后 snapshot 状态写入不再驱动重组/重绘**——
+> 输入与 clickable 回调正常（`switchTab` 已执行）、`LaunchedEffect` 不重启、连 pointer 驱动的列表滚动都零帧；`Snapshot.sendApplyNotifications()` + `view.invalidate()` 手动唤醒均无效。
+> 而同一进程内全新 `startActivity` 的实例全链路健康。二者差异仅在于窗口的建立路径（原地重建 vs 全新启动）。
+
+本节为 Code Review 人工对照项：[人工] 不达标 PR 打回。
+
+#### 7.8.1 重建路径选择（强制）
+
+- **必须**：主题切换需要重建页面的，统一接管 `recreate()` 为「销毁 + 全新 `startActivity`」——新实例在前，再 `finish()` 旧实例，使新窗口以 **全新启动路径** 建立，规避系统原地重建带来的 Compose 重组冻结。**禁止**直接调用 `super.recreate()` / `Activity.recreate()`。
+- **必须**：接管 `recreate()` 时应保留防重入守卫（`recreatePending` + `isFinishing`/`isDestroyed`），并记录本次重启的时刻（接管点记在 `recreate()` 里，或在 `onCreate` 记录实例创建时刻）；重建广播（`ThemeConfig.notifyRecreate` 合并窗口后迟到的事件总线 `RECREATE`）必须被「重启时刻 + 2s 宽限」拦截，避免二次重建打断正在建立的窗口。
+- **必须**：宽限窗只对**主题状态未变**的请求生效——宽限窗内状态已变的请求是用户新的一次切换，必须放行。只按时间丢弃会把「配置已改、新窗口还是旧主题」的请求一并吞掉：回主界面时底栏与背景被 `onResume` 刷成新主题，内容区（Compose 页）却停在旧主题（表现为「底栏切换了、界面没切换」）。基线取「触发本次重启时生效的主题状态」，**模式 + 墨水屏开关 + 色板一起比对**：主题模式（日间/夜间/跟随系统）+ 墨水屏渲染开关 + 日夜 + 主题名 + 主色/强调色/背景/底栏色 + 背景图（含模糊）+ 透明底栏。墨水屏开关必须单列：它只改由 `ThemeConfig.applyTheme` 推导并写入 `ThemeStore` 的色板，不改 `getDurConfig()` 读到的日夜偏好，只比色板会把「开关墨水屏渲染」当成没变化而吞掉。
+  参考实现：`ui/main/MainActivity`（`recreate()` 接管 + `RECREATE_IGNORE_MS = 2000L` + `isLateRecreateEcho()` 状态比对）。
+  例外（待补状态比对）：`ui/config/theme/manage/ThemeManageActivity` 有同样的接管与纯时间宽限，二次应用落在窗内时日夜切换仍由 AppCompat relaunch 生效，纯色变化会被延后重绘。
+- **必须**：接管 `recreate()` 的主界面**必须**在 manifest 上挂 `AppTheme.Main`（`windowDisablePreview = true`）。重启期间系统按**系统日夜模式**给启动窗口（预览窗口 / Android 12+ splash）铺底，而应用自身的日夜模式是用户单独设置、可与系统不一致（如系统亮色 + 应用暗色），启动窗口会闪一屏与当前主题无关的底色；关掉预览窗口后保留旧界面内容直到新实例画出第一帧。**禁止**当成"冗余属性"删掉（冷启动入口是 `WelcomeActivity`，不受此主题影响）。
+- **必须**：除 `recreate()` 之外，系统还会以「原地 relaunch」路径重建页面——未被 manifest `configChanges` 覆盖的配置变化（字体大小 `fontScale`、显示大小 `density` 等）与低内存回收后的恢复，都会**带着 `savedInstanceState`** 送一个新实例进来。这类恢复态（FragmentManager 一并恢复的 Tab Fragment + ViewPager 恢复的 adapter state）会与页面新建的 adapter 打架：ViewPager 容器里同时存在恢复的旧页面 view 与新页面 view，而它按 child 顺序布局，靠后的 Tab 被挤出可视区——表现为切到那些 Tab 时**整页空白**（只剩背景与底栏，连 View 顶栏都看不到）。因此接管 `recreate()` 的页面**必须**在 `onCreate` 里识别 `savedInstanceState != null` 的实例，把它也纳进「清任务 + 全新启动」路径（先 `super.onCreate(null)` 丢掉恢复态，再换新实例），并带一个一次性 intent 标记兜底防重入。参考实现：`ui/main/MainActivity`（`onCreate` 拦截 + `EXTRA_FRESH_RESTART` + `restartFresh()`）。
+
+#### 7.8.2 新建代码的优先方向（推荐）
+
+- **强烈推荐**：纯 Compose 页面（不依赖 `values-night` 等 XML 资源的页面）主题切换**优先「状态驱动、不重建」**——把主题色作为可观察状态直接更新，Compose 自身完成重组重绘，从根上避开重建路径。`setDefaultNightMode` 只留给确实需要切换 XML 资源的场景（Dialog 样式、系统资源等）。
+- **推荐**：新写主题切换逻辑前先对照本文件 §7 与 `ThemeConfig`/`LegadoTheme` 的现有实现，确认是否必须重建，能省则省。
+
+#### 7.8.3 排查与迁移
+
+- 发现「主题/顶栏/底栏等配置切换后，某些控件点击无反应、整页不刷新」时，先按三个探针定性：① 输入是否到达（clickable 是否执行）② snapshot 状态是否写入 ③ 重组探针是否触发。若①②通而③不触发，即为重建路径问题，按 §7.8.1 改造，不要改内容、不要堆「手动刷新」修复。
+- 迁移老页面时，现有 `ThemeManageActivity` 已按本节落地；其它 `BaseComposeActivity` 页面如出现同类冻结，参照改造后再提交。
+
+### 7.9 点击反馈（强制）
+
+> `AppSettingsRowDecoration` 的注释沉淀过关键结论：按下态经重组才能画出来，快速点击时按下与抬起在一帧内完成，自绘按压反馈会「轻点没反应、按住一会儿才有」；ripple 在绘制层生效，不依赖重组。
+
+- **默认 ripple**：可点击元素默认用 `clickable` / `combinedClickable` / M3 组件自带的 ripple；**禁止**无设计理由地传 `indication = null` 去 ripple，确要去掉（Tab 切换、加载 footer 等已有独立状态表达的场景）必须注释说明。
+- **自定义按压形变**（缩放/变色）：统一 `interactionSource` + `collectIsPressedAsState()` 读按压态，形变走 `graphicsLayer` / `Modifier.scale`（§7.6.2 通道），时长用 §7.6.1 微交互 150ms 档；**禁止**在 `pointerInput` 里手写按下/抬起检测实现按压效果。
+- 行级列表/设置行的按压反馈**优先 ripple**——轻点场景下经重组的缩放形变可能完全不可见（见本节引言）；缩放形变适合卡片等大面积、值得视觉强调的元素。
+- 触控目标 ≥ 48×48 dp 见 `accessibility.md` §15.3。
+- 基准实现：`AppSettingsRowDecoration`（ripple 取舍与原因）、`CategoryTabs` / `LoadMoreFooter` / `ExploreShowItems`（去 ripple 的既有场景）。
+
+### 7.10 墨水屏渲染（强制）
+
+> 「启用墨水屏渲染」是**渲染层**开关（`AppConfig.isEInkMode`），不是主题模式：它不改日/夜，只在当前日夜基础上把色板换成灰阶（`ThemeConfig.applyTheme` 的墨水屏分支）、去掉阴影与动画，并把界面里的一切彩色内容转灰阶。色板与 XML 主题的取用见 §7.8.1 的状态比对。
+
+- **必须**：统一在 **UI 根部罩一层灰阶**（`io.legado.app.lib.theme.EInkRender`），不要逐控件贴滤镜：
+  - Compose：`LegadoTheme` 内包一层 `Box(Modifier.eInkGrayscale())`。放在 `LegadoTheme` 内部是刻意的——页面、弹窗、底部面板、下拉菜单各自的窗口都进这一层，新写的 Compose 代码自动跟着灰阶。
+  - View：给窗口的**内容根**挂 `EInkRender.applyRootLayer(...)`。Activity 由 `LifecycleHelp.onActivityStarted` 统一挂（Compose 页面走 `BaseComposeActivity`、View 页面走 `BaseActivity`，两者没有公共基类）；`BaseDialogFragment` / `BasePrefDialogFragment` / `AndroidAlertBuilder` 各自给弹窗窗口挂一层（弹窗是独立窗口，Activity 的层盖不到）。**凡是自建 View 弹窗类都必须自己挂**——没走上面三个基类的（如 `BottomWebViewDialog`，它继承 `BottomSheetDialogFragment`）漏挂就是一整块彩色。
+  - 图层用 `LAYER_TYPE_HARDWARE` / `saveLayer`，内容不变时不重画；同类型 + 同一 Paint 的重复调用不会重建图层，所以可以安全带在每次 start 里调用。
+- **禁止**：在图片 / 文本上再逐个贴滤镜。每张图、每段文字各开一层离屏合成比整窗一层更贵，而且漏一处就是一处彩色残留（文字里的**表情符号**是字体里的彩色字形，给文本 paint 挂 `colorFilter`、`Text.color` 都改不了，只有把绘制落到离屏图层再合成的做法能覆盖：整窗一层，或拿不到窗口时用本节下面那条的 `CharSequence.eInkGrayscale()`）。
+- **禁止**：试图替换 `Activity.getSystemService(WINDOW_SERVICE)` 返回的 WindowManager 去兜住框架开的窗口（AppCompat 菜单弹窗等）。`Window.setWindowManager` 会把拿到的 WindowManager **强转成 `WindowManagerImpl`**，代理/包装一返回就是 `ClassCastException`（`Dialog` 构造期必崩）——这条已经踩过，不要重试。
+- **必须**：**拿不到窗口引用的 View 文本**（典型：AppCompat 的子菜单弹窗——「选择分组」下拉就是框架自己创建的窗口，应用连它的引用都没有）用 `CharSequence.eInkGrayscale()`（`EInkRender`）把标题本身按灰阶绘制。菜单项标题里的用户数据（分组名 `🎧有声`、标签名…）会带表情符号，不吃灰阶色板。**只贴标题文本、不要贴整行/整页**：它是 `ReplacementSpan` + `saveLayer`，作用于一段文字的绘制。
+  - **它只对含非 BMP 字符（代理对）的文本生效，这是硬约束不是优化**：换绘制方式的做法只在**非 boring 布局**下才会被调用。纯 BMP 的短标题（如「常用」「聚合书源」）会走 `BoringLayout`，那条路径**不调用替换 span 的 `draw`**，标题会整条变成空白——2026-10-13 实测：同一个「选择分组」下拉里带表情的项正常、不带表情的 6 项全部消失。所以 `eInkGrayscale()` 遇到不含非 BMP 字符的文本直接原样返回（这类文本本来就被灰阶色板变灰了，没什么要处理）；只含 BMP 表情（`❤️` 这类）的标题保持彩色，是刻意的稳妥取舍。
+  - **禁止**改用 `MetricAffectingSpan` + `paint.colorFilter` 来绕开上面这条：它确实不影响渲染（不会把标题画没），但**只把汉字变灰、彩色表情照旧彩色**（同日实测：菜单里 😈📻🔶 仍是彩色），等于白做。
+- **必须**：**Compose 自建窗口的弹层**要在自己的 `modifier` 上再贴一次 `Modifier.eInkGrayscale()`——`AlertDialog` / `BasicAlertDialog` / `DropdownMenu` 都会另开窗口，内容在**子组合**里：`MaterialTheme` 这类 CompositionLocal 会被继承，但根层那个 Modifier 挂在布局树上、**不会**被继承，于是这类弹层里全是彩色（书源名的 🍅🎵、条目元信息的 👍▶ 等）。项目自带的弹窗组件（`AppConfirmDialog` / `AppRadioChoiceDialog` / `AppSearchableChoiceDialog` / `AppTagGridDialog` / `AppModalBottomSheet` / `BookBottomSheet` / `ExploreKindSelectSheet`）已内置，新写的弹层优先用它们。
+- **必须**：`ModalBottomSheet` 的灰阶要贴在**内容根**（`content` 里最外层那个 `Column` 的 modifier），**禁止**贴在 `ModalBottomSheet(modifier = ...)` 上——sheet 的宿主自带 `offset { sheetState.requireOffset() }` 平移，而 `eInkGrayscale` 的 `saveLayer` 图层按节点尺寸从原点截取，贴在 modifier 上会让平移后的内容只剩上半截（表现为弹窗下半部分被裁掉、透出下层页面）。
+- **例外**：**窗口背景图**（`window.decorView.background`，如主界面壁纸）在内容根之外，根层盖不到，要按 `Drawable` 挂 paint 级滤镜（`ThemeConfig.getBgImage` 的 `withEInkFilter`）。这类滤镜不改解码结果、不额外开图层，代价可忽略；`CoverImageView` 等少量控件同样保留 paint 级滤镜作兜底。
+- **例外**：视频窗口（`VideoPlayerActivity`）走 Surface 输出层，不做整层合成（见 `EInkRender.rootLayerExcludedActivities`），画面保持彩色。
+- 滤镜作用在绘图层而不是解码结果上：同一个 Bitmap 关掉开关后仍是彩色的，不要为了墨水屏清 Glide 缓存，也不要在 Glide 请求上挂 `BitmapTransformation`（会多一份磁盘缓存副本）。
+- 日/夜都用同一套灰阶、**不做反相**：主流墨水屏设备前光开启时图片也仍是灰阶，反相会把封面变成底片。
+- 成本实测（1440×2560 模拟器、书架连续滚动 12 次）：平均帧耗时 12.78ms → 15.05ms（+2.27ms/帧），janky 帧仍为 0。整窗一层是这个开关的固有代价，改渲染方案前请重新测这条。
+
+---

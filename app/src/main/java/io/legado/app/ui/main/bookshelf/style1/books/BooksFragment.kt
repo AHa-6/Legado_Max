@@ -1,0 +1,318 @@
+package io.legado.app.ui.main.bookshelf.style1.books
+
+import android.content.Context
+import android.os.Bundle
+import android.view.View
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.core.view.isGone
+import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import io.legado.app.R
+import io.legado.app.base.BaseFragment
+import io.legado.app.constant.AppLog
+import io.legado.app.constant.EventBus
+import io.legado.app.data.AppDatabase
+import io.legado.app.data.appDb
+import io.legado.app.data.dao.BookShelfDisplay
+import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookGroup
+import io.legado.app.databinding.FragmentBooksBinding
+import io.legado.app.help.book.BookTagMatcher
+import io.legado.app.help.book.toSmartTagSnapshot
+import io.legado.app.help.config.AppConfig
+import io.legado.app.lib.theme.accentColor
+import io.legado.app.ui.book.info.BookInfoActivity
+import io.legado.app.ui.main.MainActivity
+import io.legado.app.ui.main.MainViewModel
+import io.legado.app.ui.main.bookshelf.compose.BookshelfBookItem
+import io.legado.app.ui.main.bookshelf.compose.BookshelfDisplayConfig
+import io.legado.app.ui.main.bookshelf.compose.buildBookshelfBookItems
+import io.legado.app.ui.main.bookshelf.compose.updateBookshelfBookUpdating
+import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.utils.cnCompare
+import io.legado.app.utils.flowWithLifecycleAndDatabaseChangeFirst
+import io.legado.app.utils.observeEvent
+import io.legado.app.utils.startActivity
+import io.legado.app.utils.startActivityForBook
+import io.legado.app.utils.viewbindingdelegate.viewBinding
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.max
+
+/**
+ * 书架界面（style1 内层分组页）。
+ *
+ * 分组骨架（TabLayout/下拉 + 内层 ViewPager + 二级标签栏）仍在 View 侧，这里只把每个
+ * 分组的书籍列表换成 Compose 渲染（内容见 [BookshelfShelfContent]）；排序、标签筛选、
+ * 下拉刷新、空态提示、底部内边距、快速滚动条与"回到顶部"等行为与原实现保持一致。
+ */
+class BooksFragment() : BaseFragment(R.layout.fragment_books) {
+
+    /**
+     * @param initialTag 首帧就要应用的标签筛选。主界面重建后父级会带上待恢复的选中标签，
+     *   让列表一开始就按它过滤，避免"先显示全部再被筛掉"那一下闪烁
+     */
+    constructor(position: Int, group: BookGroup, initialTag: String? = null) : this() {
+        val bundle = Bundle()
+        bundle.putInt("position", position)
+        bundle.putLong("groupId", group.groupId)
+        bundle.putInt("bookSort", group.getRealBookSort())
+        bundle.putBoolean("enableRefresh", group.enableRefresh)
+        bundle.putBoolean("onlyUpdateRead", group.onlyUpdateRead)
+        bundle.putString("initialTag", initialTag)
+        arguments = bundle
+    }
+
+    private val binding by viewBinding(FragmentBooksBinding::bind)
+    private val activityViewModel by activityViewModels<MainViewModel>()
+    private var booksFlowJob: Job? = null
+    var position = 0
+        private set
+    var groupId = -1L
+        private set
+    var bookSort = 0
+        private set
+    private var upLastUpdateTimeJob: Job? = null
+    private var enableRefresh = true
+    private var onlyUpdateRead = false
+    private var tagFilter: String? = null
+
+    /** 当前展示的书籍（已按标签筛选，供目录更新与重新构建条目复用） */
+    private var shelfDisplays: List<BookShelfDisplay> = emptyList()
+    private var displayConfig by mutableStateOf(BookshelfDisplayConfig.fromAppConfig())
+    private var shelfItems by mutableStateOf<List<BookshelfBookItem>>(emptyList())
+    private var bottomPaddingPx by mutableIntStateOf(0)
+    private var canScrollBackward by mutableStateOf(false)
+    private var scrollToTopTick by mutableIntStateOf(0)
+    private var immediateScrollToTopTick by mutableIntStateOf(0)
+
+    override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
+        arguments?.let {
+            position = it.getInt("position", 0)
+            groupId = it.getLong("groupId", -1)
+            bookSort = it.getInt("bookSort", 0)
+            enableRefresh = it.getBoolean("enableRefresh", true)
+            onlyUpdateRead = it.getBoolean("onlyUpdateRead", false)
+            // 首次数据加载前就带上筛选，避免重建后先渲染未筛选列表再纠正
+            tagFilter = it.getString("initialTag")
+            binding.refreshLayout.isEnabled = enableRefresh
+        }
+        updateMainBottomPadding((activity as? MainActivity)?.mainContentBottomPadding() ?: 0)
+        initSwipeRefresh()
+        upRecyclerData()
+    }
+
+    private fun initSwipeRefresh() {
+        binding.refreshLayout.setColorSchemeColors(accentColor)
+        // ComposeView 不参与 View 体系的滚动测量，下拉刷新能否触发由列表状态反向同步
+        binding.refreshLayout.setOnChildScrollUpCallback { _, _ -> canScrollBackward }
+        binding.refreshLayout.setOnRefreshListener {
+            binding.refreshLayout.isRefreshing = false
+            activityViewModel.upToc(getBooks(), onlyUpdateRead)
+        }
+        binding.composeBookshelf.setViewCompositionStrategy(
+            ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+        )
+        binding.composeBookshelf.setContent {
+            // 内嵌 ComposeView 不带背景，这里只注入主题色板：
+            // 不包 LegadoTheme 的话 MaterialTheme 走 M3 默认色，角标/进度条/标题全部偏离应用主题
+            LegadoTheme {
+                BookshelfShelfContent(
+                    shelfItems = shelfItems,
+                    displayConfig = displayConfig,
+                    bottomPaddingPx = bottomPaddingPx,
+                    scrollToTopTick = scrollToTopTick,
+                    immediateScrollToTopTick = immediateScrollToTopTick,
+                    onScrollBackwardChange = { canScrollBackward = it },
+                    onBookClick = ::onBookClick,
+                    onBookLongClick = ::onBookLongClick,
+                )
+            }
+        }
+        startLastUpdateTimeJob()
+    }
+
+    fun updateMainBottomPadding(bottomPadding: Int) {
+        bottomPaddingPx = bottomPadding
+    }
+
+    fun upBookSort(sort: Int) {
+        binding.root.post {
+            arguments?.putInt("bookSort", sort)
+            bookSort = sort
+            upRecyclerData()
+        }
+    }
+
+    fun setEnableRefresh(enable: Boolean) {
+        enableRefresh = enable
+        binding.refreshLayout.isEnabled = enable
+    }
+
+    /**
+     * 更新书籍列表数据。
+     *
+     * 数据源、排序口径与标签筛选逻辑与原实现一致；标签筛选与条目建模是 O(书籍数) 的
+     * 逐本计算（标签解析、简介清洗等），必须留在 flowOn(Default) 的上游执行，
+     * collect 只做状态提交——书多时（千本级）在主线程做这两步会卡住整个启动期/刷新期。
+     */
+    private fun upRecyclerData() {
+        booksFlowJob?.cancel()
+        val appContext = requireContext().applicationContext
+        booksFlowJob = viewLifecycleOwner.lifecycleScope.launch {
+            appDb.bookDao.flowShelfByGroup(groupId).map { list ->
+                val sorted = when (bookSort) {
+                    1 -> list.sortedByDescending { it.latestChapterTime }
+                    2 -> list.sortedWith { o1, o2 -> o1.name.cnCompare(o2.name) }
+                    3 -> list.sortedBy { it.order }
+                    // 综合排序 issue #3192
+                    4 -> list.sortedByDescending { max(it.latestChapterTime, it.durChapterTime) }
+                    5 -> list.sortedWith { o1, o2 -> o1.author.cnCompare(o2.author) }
+                    // SQL 已按 durChapterTime DESC 排序，无需再排
+                    else -> list
+                }
+                val filtered = applyTagFilter(sorted, appContext)
+                val items = buildBookshelfBookItems(
+                    context = appContext,
+                    displays = filtered,
+                    displayConfig = displayConfig,
+                    isUpdating = ::isUpdate,
+                )
+                filtered to items
+            }.flowWithLifecycleAndDatabaseChangeFirst(
+                viewLifecycleOwner.lifecycle,
+                Lifecycle.State.STARTED,
+                AppDatabase.BOOK_TABLE_NAME,
+            ).catch {
+                AppLog.put("书架更新出错", it)
+            }.conflate().flowOn(Dispatchers.Default).collect { (filtered, items) ->
+                shelfDisplays = filtered
+                binding.tvEmptyMsg.isGone = filtered.isNotEmpty()
+                binding.refreshLayout.isEnabled = enableRefresh && filtered.isNotEmpty()
+                shelfItems = items
+            }
+        }
+    }
+
+    private fun buildItems(displays: List<BookShelfDisplay>): List<BookshelfBookItem> =
+        buildBookshelfBookItems(
+            context = requireContext(),
+            displays = displays,
+            displayConfig = displayConfig,
+            isUpdating = ::isUpdate,
+        )
+
+    private fun applyTagFilter(
+        list: List<BookShelfDisplay>,
+        appContext: Context,
+    ): List<BookShelfDisplay> {
+        val filterTag = tagFilter ?: return list
+        val smartRules = BookTagMatcher.enabledRules(appContext)
+        return list.filter {
+            BookTagMatcher.matches(
+                filterTag,
+                it.customTag,
+                it.toSmartTagSnapshot(),
+                smartRules,
+            )
+        }
+    }
+
+    /** 启动"最后更新时间"定时刷新：列表布局下每 30 秒重算一次相对时间 */
+    private fun startLastUpdateTimeJob() {
+        upLastUpdateTimeJob?.cancel()
+        if (!displayConfig.showLastUpdateTime || displayConfig.isGrid) {
+            return
+        }
+        upLastUpdateTimeJob = viewLifecycleOwner.lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (isActive) {
+                    if (shelfDisplays.isNotEmpty()) {
+                        // 相对时间刷新是 O(书籍数) 的逐本计算，放后台做
+                        val displays = shelfDisplays
+                        shelfItems = withContext(Dispatchers.Default) { buildItems(displays) }
+                    }
+                    delay(30 * 1000)
+                }
+            }
+        }
+    }
+
+    fun getBooks(): List<Book> = shelfDisplays.map { it.toMinimalBook() }
+
+    fun gotoTop() {
+        if (AppConfig.isEInkMode) {
+            immediateScrollToTopTick++
+        } else {
+            scrollToTopTick++
+        }
+    }
+
+    fun getBooksCount(): Int = shelfItems.size
+
+    /**
+     * 按标签筛选书籍。传 null 表示清除筛选。
+     *
+     * 筛选值没变时直接返回：父页的 [loadTagBar] 会在标签源每次变化后重跑并回调到这里，
+     * 而标签源变化本身就会让 [upRecyclerData] 的数据流重新发射——再取消/重启一次
+     * 就是白跑一遍全表查询、排序与条目重建（分组切换/阅读进度写入时都能感觉到）。
+     */
+    fun filterByTag(tag: String?) {
+        if (tag == tagFilter) return
+        tagFilter = tag
+        upRecyclerData()
+    }
+
+    private fun onBookClick(bookItem: BookshelfBookItem) {
+        startActivityForBook(bookItem.display.toMinimalBook())
+    }
+
+    private fun onBookLongClick(bookItem: BookshelfBookItem) {
+        val book = bookItem.display.toMinimalBook()
+        startActivity<BookInfoActivity> {
+            putExtra("name", book.name)
+            putExtra("author", book.author)
+        }
+    }
+
+    private fun isUpdate(bookUrl: String): Boolean = activityViewModel.isUpdate(bookUrl)
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        shelfItems = emptyList()
+    }
+
+    override fun observeLiveBus() {
+        super.observeLiveBus()
+        observeEvent<String>(EventBus.UP_BOOKSHELF) {
+            shelfItems = updateBookshelfBookUpdating(shelfItems, it, ::isUpdate)
+        }
+        observeEvent<String>(EventBus.BOOKSHELF_REFRESH) {
+            displayConfig = BookshelfDisplayConfig.fromAppConfig()
+            // 布局、边距、条目内容开关变化后需要重建条目，并重启相对时间刷新任务
+            val displays = shelfDisplays
+            val config = displayConfig
+            val appContext = requireContext().applicationContext
+            lifecycleScope.launch {
+                shelfItems = withContext(Dispatchers.Default) {
+                    buildBookshelfBookItems(appContext, displays, config, ::isUpdate)
+                }
+            }
+            startLastUpdateTimeJob()
+        }
+    }
+}

@@ -1,0 +1,492 @@
+package io.legado.app.ui.book.explore
+
+import android.app.Application
+import android.content.Intent
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.viewModelScope
+import io.legado.app.BuildConfig
+import io.legado.app.base.BaseViewModel
+import io.legado.app.constant.AppLog
+import io.legado.app.data.appDb
+import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.SearchBook
+import io.legado.app.domain.model.BookShelfState
+import io.legado.app.help.book.BookshelfMatcher
+import io.legado.app.model.blockrule.BlockRule
+import io.legado.app.model.blockrule.BlockRuleStore
+import io.legado.app.model.SharedJsScope
+import io.legado.app.model.webBook.WebBook
+import io.legado.app.utils.printOnDebug
+import io.legado.app.utils.stackTraceStr
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import io.legado.app.help.source.exploreKinds
+import io.legado.app.data.entities.rule.ExploreKind
+import java.util.concurrent.ConcurrentHashMap
+
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class ExploreShowViewModel(application: Application) : BaseViewModel(application) {
+    companion object {
+        private val pageQueryRegex = Regex("""([?&]page=)(\d+)""", RegexOption.IGNORE_CASE)
+        /** 预加载缓存的最大数量，避免OOM */
+        private const val MAX_PRELOAD_CACHE_SIZE = 10
+    }
+
+    val upAdapterLiveData = MutableLiveData<String>()
+    val booksData = MutableLiveData<List<SearchBook>>()
+    val addBooksData = MutableLiveData<List<SearchBook>>()
+    val errorLiveData = MutableLiveData<String>()
+    val errorTopLiveData = MutableLiveData<String>()
+    val pageLiveData = MutableLiveData<Int>()
+    val addAllToShelfResult = MutableLiveData<Int>()
+    /** 屏蔽规则变化后通知UI全量刷新书籍列表 */
+    val blockRulesRefreshData = MutableLiveData<List<SearchBook>>()
+    /** 屏蔽数量变化通知UI更新进度指示器 */
+    val blockedCountData = MutableLiveData<Int>()
+    /** 实际匹配到书籍的规则列表，用于"开启屏蔽规则后起效的规则"展示 */
+    val matchedRulesData = MutableLiveData<List<BlockRule>>()
+    val booksCount: Int get() = books.size
+    /** 所有发现分类列表，用于Tab显示 */
+    val exploreKindsData = MutableLiveData<List<ExploreKind>>()
+    /** 预加载的分类数据缓存（分类URL -> 书籍列表） */
+    private val preloadCache = ConcurrentHashMap<String, List<SearchBook>>()
+    private var bookSource: BookSource? = null
+    private var exploreUrl: String? = null
+    private var page = 1
+    private var books = linkedSetOf<SearchBook>()
+    /** 原始未过滤的书籍列表，用于屏蔽规则变化时重新过滤 */
+    private var allBooks = linkedSetOf<SearchBook>()
+    /** 获取原始未过滤书籍列表的副本 */
+    val allBooksList: List<SearchBook> get() = allBooks.toList()
+    /** 当前书源URL，用于屏蔽规则过滤 */
+    var currentSourceUrl: String = ""
+
+    /**
+     * 请求代际：切源 / 切分类 / 跳页 / 清空内容时递增，
+     * 在途的 explore 响应回调据此作废——否则清空列表后旧分类的数据回来会把内容回填
+     * （对齐参考分支 discoverRequestVersion 的防串语义）
+     */
+    private var loadGeneration = 0
+
+    //订阅 BookshelfMatcher 刷新信号，转发为 upAdapterLiveData
+    init {
+        viewModelScope.launch {
+            BookshelfMatcher.refreshSignal.collect {
+                upAdapterLiveData.postValue("isInBookshelf")
+            }
+        }
+    }
+    
+    /**
+     * ViewModel初始化数据
+     */
+    fun initData(intent: Intent) {
+        initData(intent.getStringExtra("sourceUrl"), intent.getStringExtra("exploreUrl"))
+    }
+
+    /**
+     * 无 Intent 入口的初始化（新版发现主界面按源切换时使用）：
+     * exploreUrl 传 null 时取源的第一个分类作为初始分类。
+     */
+    fun initData(sourceUrl: String?, newExploreUrl: String?) {
+        execute { loadSourceData(sourceUrl, newExploreUrl) }
+    }
+
+    /**
+     * 重新解析当前书源的分类并重载当前分类（新版发现三点菜单的"刷新"用）。
+     *
+     * 刷新必须按"书源可能已被编辑过"处理：重读库里的书源对象，
+     * 否则旧对象里的 exploreUrl 与规则会让重算结果和刷新前一样。
+     * 分类缓存（`exploreKinds()` 的进程内 + ACache 两层）由调用方先清
+     * （见 `ExploreKindsController.clearKindsCache`）：那份缓存与分类区共用，
+     * 在这里清会让分类区拿到清空后的重新求值结果、与内容区错位。
+     */
+    fun refreshCurrent() {
+        val sourceUrl = currentSourceUrl
+        if (sourceUrl.isBlank()) return
+        execute {
+            bookSource = appDb.bookSourceDao.getBookSource(sourceUrl)
+            SharedJsScope.prefetch(bookSource?.jsLib)
+            loadSourceData(sourceUrl, currentKindBaseUrl)
+        }
+    }
+
+    /** 按源装载分类与首屏数据（[initData] 与 [refreshCurrent] 共用） */
+    private suspend fun loadSourceData(sourceUrl: String?, newExploreUrl: String?) {
+        loadGeneration++
+        currentSourceUrl = sourceUrl ?: ""
+        // 新版发现复用常驻 VM 按源切换：先清上一源的数据，避免新旧源串流
+        books.clear()
+        allBooks.clear()
+        preloadCache.clear()
+        if (bookSource == null && sourceUrl != null) {
+            bookSource = appDb.bookSourceDao.getBookSource(sourceUrl)
+        } else if (sourceUrl != null && bookSource?.bookSourceUrl != sourceUrl) {
+            bookSource = appDb.bookSourceDao.getBookSource(sourceUrl)
+        }
+        // 后台异步预下载 jsLib URL，避免首次 useweb 渲染时主线程 runBlocking 卡住
+        SharedJsScope.prefetch(bookSource?.jsLib)
+        if (newExploreUrl != null) {
+            exploreUrl = newExploreUrl
+            // 记住分类的基准 URL：explore() 会把 exploreUrl 原地改写成带页码的请求地址，
+            // 刷新必须回到未改写的基准，否则字面 ?page=N 的源会从第 N 页起载
+            currentKindBaseUrl = newExploreUrl
+            page = parsePageFromUrl(newExploreUrl)
+            pageLiveData.postValue(page)
+            // 加载所有发现分类（用于Tab显示）
+            loadExploreKinds()
+            explore()
+        } else {
+            val kinds = runCatching {
+                withContext(IO) {
+                    bookSource?.exploreKinds().orEmpty().filter { !it.url.isNullOrBlank() }
+                }
+            }.getOrDefault(emptyList())
+            exploreKindsData.postValue(kinds)
+            // 初始分类必须是可直接访问的 url 类：select/button 类的 url 是模板/脚本，
+            // 依赖 infoMap 求值，不能直接当 exploreUrl 加载
+            val firstUrl = kinds.firstOrNull { it.type == ExploreKind.Type.url }?.url
+            exploreUrl = firstUrl
+            currentKindBaseUrl = firstUrl
+            page = parsePageFromUrl(firstUrl)
+            pageLiveData.postValue(page)
+            explore()
+        }
+    }
+
+    /** 作废在途的 explore 响应：清空内容区（无可选分类的分组）也必须调，否则旧数据到达会把空态回填 */
+    fun invalidateInFlightLoads() {
+        loadGeneration++
+    }
+
+    /** 当前分类的基准 URL（未经页码改写）：刷新用它，避免页码漂移 */
+    private var currentKindBaseUrl: String? = null
+
+    /**
+     * 加载书源的所有发现分类
+     */
+    private suspend fun loadExploreKinds() {
+        val source = bookSource
+        if (source == null) {
+            exploreKindsData.postValue(emptyList())
+            return
+        }
+        withContext(IO) {
+            kotlin.runCatching {
+                source.exploreKinds().filter { !it.url.isNullOrBlank() }
+            }.onSuccess { kinds ->
+                exploreKindsData.postValue(kinds)
+            }.onFailure {
+                exploreKindsData.postValue(emptyList())
+            }
+        }
+    }
+
+    /**
+     * 上滑触发的增量更新
+     */
+    fun explore(page: Int) {
+        val source = bookSource
+        val url = buildExploreUrl(page)
+        if (source == null || url == null) return
+        val generation = loadGeneration
+        WebBook.exploreBook(viewModelScope, source, url, page)
+            .timeout(if (BuildConfig.DEBUG) 0L else 60000L)
+            .onSuccess(IO) { searchBooks ->
+                if (generation != loadGeneration) return@onSuccess
+                allBooks.addAll(searchBooks)
+                val filtered = BlockRuleStore.filterBooks(getApplication(), searchBooks, currentSourceUrl)
+                val newBooks = linkedSetOf<SearchBook>()
+                newBooks.addAll(filtered)
+                newBooks.addAll(books)
+                books = newBooks
+                appDb.searchBookDao.insert(*searchBooks.toTypedArray())
+                val blockedCount = allBooks.size - books.size
+                viewModelScope.launch(Dispatchers.Main) {
+                    // 回填前在主线程做最终代际校验：与切分类/清空等主线程复位原子化，
+                    // 消除"IO 回调检查后、postValue 前发生切换"的窄窗口
+                    if (generation != loadGeneration) return@launch
+                    addBooksData.value = filtered
+                    blockedCountData.value = blockedCount
+                    pageLiveData.value = page
+                }
+            }.onError {
+                if (generation != loadGeneration) return@onError
+                it.printOnDebug()
+                errorTopLiveData.postValue(it.stackTraceStr)
+            }
+    }
+
+    /**
+     * 跳转到指定页码
+     */
+    fun skipPage(page: Int) {
+        if (page > 0) {
+            loadGeneration++
+            books.clear()
+            allBooks.clear()
+            this.page = page
+            pageLiveData.postValue(page)
+        }
+    }
+    /**
+     * 网络请求核心逻辑
+     */
+    fun explore() {
+        val source = bookSource
+        val requestPage = page
+        val url = buildExploreUrl(requestPage)
+        if (source == null || url == null) return
+        val generation = loadGeneration
+        WebBook.exploreBook(viewModelScope, source, url, requestPage)
+            .timeout(if (BuildConfig.DEBUG) 0L else 60000L)
+            .onSuccess(IO) { searchBooks ->
+                if (generation != loadGeneration) return@onSuccess
+                allBooks.addAll(searchBooks)
+                val filtered = BlockRuleStore.filterBooks(getApplication(), searchBooks, currentSourceUrl)
+                books.addAll(filtered)
+                appDb.searchBookDao.insert(*searchBooks.toTypedArray())
+                val blockedCount = allBooks.size - books.size
+                viewModelScope.launch(Dispatchers.Main) {
+                    // 回填前在主线程做最终代际校验：与切分类/清空等主线程复位原子化，
+                    // 消除"IO 回调检查后、postValue 前发生切换"的窄窗口
+                    if (generation != loadGeneration) return@launch
+                    booksData.value = books.toList()
+                    blockedCountData.value = blockedCount
+                    pageLiveData.value = requestPage
+                    page = requestPage + 1
+                }
+            }.onError {
+                if (generation != loadGeneration) return@onError
+                it.printOnDebug()
+                errorLiveData.postValue(it.stackTraceStr)
+            }
+    }
+
+    private fun parsePageFromUrl(url: String?): Int {
+        val pageValue = url?.let {
+            // 从URL中提取页码，分页机制
+            // 例如：https://www.baidu.com/explore?page=2
+            pageQueryRegex.find(it)?.groupValues?.getOrNull(2)?.toIntOrNull()
+        }
+        return pageValue?.takeIf { it > 0 } ?: 1
+    }
+
+    private fun buildExploreUrl(page: Int): String? {
+        val safePage = page.coerceAtLeast(1)
+        val currentUrl = exploreUrl ?: return null
+        val updatedUrl = pageQueryRegex.replace(currentUrl) {
+            "${it.groupValues[1]}$safePage"
+        }
+        exploreUrl = updatedUrl
+        return updatedUrl
+    }
+
+    /**
+     * 屏蔽规则变化后重新过滤当前书籍列表
+     *
+     * 使用 [BlockRuleStore.filterAndCollectMatched] 在单次遍历中同时完成
+     * 过滤和匹配规则收集，避免对同一批数据遍历两次
+     */
+    fun applyBlockRules(sourceUrl: String) {
+        currentSourceUrl = sourceUrl
+        BlockRuleStore.invalidateCache()
+        val result = BlockRuleStore.filterAndCollectMatched(
+            getApplication(), allBooks.toList(), sourceUrl
+        )
+        books = linkedSetOf<SearchBook>().apply { addAll(result.filteredBooks) }
+        blockedCountData.postValue(allBooks.size - books.size)
+        matchedRulesData.postValue(result.matchedRules)
+        blockRulesRefreshData.postValue(books.toList())
+    }
+
+    fun isInBookShelf(book: SearchBook): Boolean {
+        return BookshelfMatcher.isInShelf(book.bookUrl, book.name, book.author)
+    }
+
+    fun getBookShelfState(book: SearchBook): BookShelfState {
+        return BookshelfMatcher.getState(book.name, book.author, book.bookUrl)
+    }
+
+    fun addAllToShelf(groupId: Long) {
+        execute {
+            val booksToAdd = books.filterNot { isInBookShelf(it) }
+            if (booksToAdd.isEmpty()) {
+                addAllToShelfResult.postValue(0)
+                return@execute
+            }
+            
+            val bookEntities = booksToAdd.mapIndexed { index, searchBook ->
+                searchBook.toBook().apply {
+                    this.group = groupId
+                    this.order = index
+                }
+            }
+            
+            appDb.bookDao.insert(*bookEntities.toTypedArray())
+            // BookshelfMatcher 会通过 flowShelfKeys() 自动感知 DB 变化并刷新
+            
+            addAllToShelfResult.postValue(booksToAdd.size)
+        }.onError {
+            AppLog.put("批量加入书架失败", it)
+            errorLiveData.postValue("批量加入书架失败: ${it.localizedMessage}")
+        }
+    }
+
+    fun addToShelf(book: SearchBook) {
+        execute {
+            val bookEntity = book.toBook()
+            appDb.bookDao.insert(bookEntity)
+            // BookshelfMatcher 会通过 flowShelfKeys() 自动感知 DB 变化并刷新
+        }.onError {
+            AppLog.put("加入书架失败", it)
+            errorLiveData.postValue("加入书架失败: ${it.localizedMessage}")
+        }
+    }
+
+    /**
+     * 切换到指定分类
+     * 清空当前书籍列表，加载新分类的书籍
+     *
+     * @param newUrl 分类URL
+     * @param exploreName 分类名称（可选，用于标题栏）
+     * @param preload 是否预加载相邻分类
+     * @param allKinds 所有分类列表（用于预加载相邻分类）
+     */
+    fun switchCategory(
+        newUrl: String,
+        exploreName: String? = null,
+        preload: Boolean = false,
+        allKinds: List<ExploreKind>? = null
+    ) {
+        execute {
+            loadGeneration++
+            // 检查是否有预加载缓存
+            val cachedData = preloadCache[newUrl]
+            if (cachedData != null) {
+                // 使用缓存数据
+                books.clear()
+                allBooks.clear()
+                books.addAll(cachedData)
+                allBooks.addAll(cachedData)
+                booksData.postValue(cachedData)
+                page = parsePageFromUrl(newUrl) + 1
+                exploreUrl = newUrl
+                pageLiveData.postValue(parsePageFromUrl(newUrl))
+                // 清除已使用的缓存
+                preloadCache.remove(newUrl)
+            } else {
+                // 清空当前书籍列表（不发送空列表，避免触发"没有更多数据"提示）
+                books.clear()
+                allBooks.clear()
+                // 更新URL和页码
+                page = parsePageFromUrl(newUrl)
+                exploreUrl = newUrl
+                pageLiveData.postValue(page)
+                // 开始加载新分类的书籍
+                explore()
+            }
+
+            // 预加载相邻分类
+            if (preload && allKinds != null) {
+                preloadAdjacentCategories(newUrl, allKinds)
+            }
+        }
+    }
+
+    /**
+     * 预加载相邻分类的内容
+     *
+     * @param currentUrl 当前分类URL
+     * @param allKinds 所有分类列表
+     */
+    private fun preloadAdjacentCategories(currentUrl: String, allKinds: List<ExploreKind>) {
+        val currentIndex = allKinds.indexOfFirst { it.url == currentUrl }
+        if (currentIndex < 0) return
+
+        val source = bookSource ?: return
+        val indicesToPreload = mutableListOf<Int>()
+
+        // 预加载前一个分类
+        if (currentIndex > 0) {
+            indicesToPreload.add(currentIndex - 1)
+        }
+        // 预加载后一个分类
+        if (currentIndex < allKinds.size - 1) {
+            indicesToPreload.add(currentIndex + 1)
+        }
+
+        // 检查缓存大小，如果超过限制，清除旧的缓存
+        if (preloadCache.size >= MAX_PRELOAD_CACHE_SIZE) {
+            // 清除一半的缓存（保留当前分类相邻的）
+            val urlsToKeep = mutableSetOf<String>()
+            indicesToPreload.forEach { index ->
+                allKinds.getOrNull(index)?.url?.let { urlsToKeep.add(it) }
+            }
+            urlsToKeep.add(currentUrl)
+            
+            preloadCache.keys.removeAll { !urlsToKeep.contains(it) }
+        }
+
+        // 异步预加载
+        viewModelScope.launch(IO) {
+            val generation = loadGeneration
+            indicesToPreload.forEach { index ->
+                val kind = allKinds[index]
+                val url = kind.url ?: return@forEach
+                // 检查是否已缓存
+                if (preloadCache.containsKey(url)) return@forEach
+
+                kotlin.runCatching {
+                    val preloadPage = parsePageFromUrl(url)
+                    val preloadUrl = buildExploreUrlFromBase(url, preloadPage)
+                    if (preloadUrl != null) {
+                        WebBook.exploreBookAwait(source, preloadUrl, preloadPage)
+                    } else {
+                        null
+                    }
+                }.onSuccess { searchBooks ->
+                    // 切源后 initData 会清 preloadCache：旧源的在途预载不能再写回来
+                    if (searchBooks != null && generation == loadGeneration) {
+                        val filtered = BlockRuleStore.filterBooks(
+                            getApplication(),
+                            searchBooks,
+                            currentSourceUrl
+                        )
+                        preloadCache[url] = filtered
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 从基础URL构建完整的探索URL
+     */
+    private fun buildExploreUrlFromBase(baseUrl: String, page: Int): String? {
+        val safePage = page.coerceAtLeast(1)
+        return pageQueryRegex.replace(baseUrl) {
+            "${it.groupValues[1]}$safePage"
+        }
+    }
+
+    /**
+     * 检查是否有预加载缓存
+     */
+    fun hasPreloadCache(url: String): Boolean {
+        return preloadCache.containsKey(url)
+    }
+
+    /**
+     * 清除预加载缓存
+     */
+    fun clearPreloadCache() {
+        preloadCache.clear()
+    }
+
+}
