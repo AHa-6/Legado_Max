@@ -11,8 +11,9 @@
 #   * 分支固定 compose-rework。本地历史是 git init 造出的孤立根提交，与
 #     fork 的 main 无共同祖先，推 main 必被 non-fast-forward 拒绝，加 --force
 #     会抹掉 main 上原有的自有提交。所以只往 compose-rework 这条独立分支推。
-#   * 版本号来自 app/build.gradle 的 releaseTime()/releaseCode()，是编译时刻的
-#     时间函数；tag 名直接用产物的 versionName，事后能一一对上。
+#   * 版本号取自本次编译产物的文件名，而不是读 app/build.gradle —— 那里的
+#     versionName 由 releaseTime() 生成，是编译时刻的时间函数，静态读不到实际值。
+#     tag 名就用产物的 versionName，事后能与 APK 一一对上。
 #
 # 用法：
 #   tools/gh_backup.sh                 # 提交 + 打 tag + 推送 + 重建 bundle
@@ -24,6 +25,9 @@ set -u
 
 BRANCH="compose-rework"
 REMOTE_URL="https://github.com/AHa-6/Legado_Max.git"
+# 推送时令牌内联进 URL，且禁止任何交互式凭据提示，避免卡在
+# "Username for 'https://github.com':" 上一直等到超时。
+export GIT_TERMINAL_PROMPT=0
 PB="/data/user/0/com.ai.assistance.operit/files/datastore/github_auth_preferences.preferences_pb"
 BUNDLE_DIR="/sdcard/全 Oprtit AI专用/legado_git_backup_20261101"
 
@@ -68,7 +72,7 @@ echo "== 令牌已取到（长度 ${#TOKEN}，前缀 ${TOKEN:0:4}）"
 if [ "$DRY_RUN" = "1" ]; then
     echo "== [dry-run] 将执行："
     echo "   git add -A && git commit -m 'release: $VERSION'"
-    echo "   git tag -f release-$VERSION"
+    echo "   git tag release-$VERSION（仅当该 tag 不存在）"
     echo "   git push $REMOTE_URL HEAD:refs/heads/$BRANCH"
     echo "   git push $REMOTE_URL refs/tags/release-$VERSION"
     echo "   git bundle create $BUNDLE_DIR/... HEAD --all"
@@ -86,24 +90,48 @@ COMMIT="$(git rev-parse HEAD)"
 echo "== HEAD: $COMMIT"
 
 # ---- 4. 打 tag ---------------------------------------------------------------
+# 同一个版本号可能因收尾修补而提交多次。已发布的 tag 不移动（远端会以
+# non-fast-forward 拒绝，且历史记录就失真了），只在不存在时创建。
 TAG="release-$VERSION"
-git tag -f "$TAG" "$COMMIT" || exit 1
-echo "== tag: $TAG -> $COMMIT"
+EXISTING="$(git rev-parse -q --verify "refs/tags/$TAG" 2>/dev/null)"
+if [ -z "$EXISTING" ]; then
+    git tag "$TAG" "$COMMIT" || exit 1
+    echo "== tag: $TAG -> $COMMIT（新建）"
+elif [ "$EXISTING" = "$COMMIT" ]; then
+    echo "== tag: $TAG 已存在并指向当前提交"
+else
+    echo "== tag: $TAG 已存在（指向 ${EXISTING:0:7}），本次不移动，改动只进分支"
+fi
 
 # ---- 5. 推送分支与 tag -------------------------------------------------------
+# 令牌必须内联进 URL：git 只认 URL 里自带的 userinfo，干净的 https 地址会转去
+# 问终端要用户名，于是挂死在 "Username for 'https://github.com':" 上。
+# 输出统一过一遍 sed 把令牌抹掉，避免回显进日志。
+PUSH_URL="https://x-access-token:${TOKEN}@github.com/AHa-6/Legado_Max.git"
+
+# 这条链路的出网时通时不通（同一命令上一秒 Recv failure、下一秒 connection
+# abort、再下一秒成功），所以单次失败不代表出错，重试是必需的而不是保险。
+# 每次给 150s 上限，避免一次挂死把整个脚本拖到终端超时。
+push_retry() {
+    local refspec="$1" i rc
+    for i in 1 2 3 4 5; do
+        echo "   attempt $i: $refspec"
+        timeout 150 git -c credential.helper= -c http.version=HTTP/1.1 \
+            push "$PUSH_URL" "$refspec" 2>&1 \
+            | sed -e "s/${TOKEN}/***/g" | tail -3
+        rc=${PIPESTATUS[0]}
+        [ "$rc" = "0" ] && return 0
+        echo "   rc=$rc，5 秒后重试"
+        sleep 5
+    done
+    return 2
+}
+
 echo "== push $BRANCH"
-git -c credential.helper= push "$REMOTE_URL" "HEAD:refs/heads/$BRANCH" 2>&1 | tail -3
-RC=${PIPESTATUS[0]}
-if [ "$RC" != "0" ]; then
-    echo "!! 分支推送失败 RC=$RC"; exit 2
-fi
+push_retry "HEAD:refs/heads/$BRANCH" || { echo "!! 分支推送失败（已重试 5 次）"; exit 2; }
 
 echo "== push tag $TAG"
-git -c credential.helper= push "$REMOTE_URL" "refs/tags/$TAG" 2>&1 | tail -3
-RC=${PIPESTATUS[0]}
-if [ "$RC" != "0" ]; then
-    echo "!! tag 推送失败 RC=$RC"; exit 2
-fi
+push_retry "refs/tags/$TAG" || { echo "!! tag 推送失败（已重试 5 次）"; exit 2; }
 
 # ---- 6. 重建离线 bundle ------------------------------------------------------
 if [ -d "$BUNDLE_DIR" ]; then
