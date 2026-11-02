@@ -16,9 +16,11 @@ import android.text.style.URLSpan
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.PageAnim
+import io.legado.app.data.appDb
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.Bookmark
 import io.legado.app.help.book.BookContent
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ChapterTitleSplitter
@@ -185,6 +187,23 @@ class TextChapterLayout(
     }
 
     private var pendingTextPage = TextPage()
+
+    /**
+     * 覆盖到本章的书签文字高亮，排版期只查一次库。
+     *
+     * 走 BookmarkDao.getHighlightsByChapter 在 SQL 里按章过滤：一本书的书签可能上千条，
+     * 全查出来再在内存里筛会拖慢每次排版（排版是同步阻塞在 IO 线程上的）。
+     * 查询失败按"没有高亮"处理，不能让书签表的异常把整章排版带崩。
+     */
+    private val chapterHighlights: List<CompiledBookmarkHighlight> by lazy {
+        kotlin.runCatching {
+            appDb.bookmarkDao.getHighlightsByChapter(book.name, book.author, bookChapter.index)
+                .mapNotNull { it.toCompiledHighlight(bookChapter.index) }
+        }.getOrElse {
+            AppLog.put("读取书签高亮失败", it)
+            emptyList()
+        }
+    }
 
     private val bookChapter inline get() = textChapter.chapter
     private val displayTitle inline get() = textChapter.title
@@ -1557,6 +1576,121 @@ class TextChapterLayout(
         return styles
     }
 
+    //region 书签文字高亮
+    /**
+     * 本行第一个字符在**章节正文**里的绝对偏移。
+     *
+     * 与 [calcTextLinePosition] 写进 `TextLine.chapterPosition` 的值同源同算法：
+     * 上一个已完成页面的末行结束位置 + 当前页 stringBuilder 已累积的长度。
+     * 书签存的 `chapterPos` 就是这个坐标系（由 `TextPage.getPosByLineColumn` +
+     * `TextChapter.getReadLength` 算出），两边必须一致，高亮才会落在原文上。
+     *
+     * 双页模式与懒加载续排都成立：
+     * - 双页翻页只换 `absStartX`，不动 `textPages` 也不清 `stringBuilder`；
+     * - 续排把末页摘回 `pendingTextPage` 并按其行文本重建 `stringBuilder`，
+     *   摘掉的那页正好从 `textPages` 移除，两边一增一减，偏移不变。
+     */
+    private fun chapterOffsetOf(sbLength: Int): Int {
+        val lastLine = textPages.lastOrNull()?.lines?.lastOrNull()
+        val previousEnd = lastLine?.let {
+            it.chapterPosition + it.charSize + if (it.isParagraphEnd) 1 else 0
+        } ?: 0
+        return previousEnd + sbLength
+    }
+
+    /**
+     * 把命中本行的书签高亮并进段落样式数组。
+     *
+     * 书签区间是**章节绝对偏移**，样式数组是**段落文本下标**，两者按
+     * `段落下标 = lineStart + (章节偏移 - chapterOffset)` 换算。跨行/跨页的长高亮
+     * 在每一行各自裁一次，行外的部分自然落到后续行的调用里。
+     *
+     * 与规则高亮用 [CharStyle.mergedWith] 字段级合并：书签只带背景色或下划线，
+     * 不带字体/字距/行距，所以规则的留白与行距不会丢，也不会改变已完成的测量与断行。
+     *
+     * @param chapterOffset 本行首字符的章节绝对偏移（见 [chapterOffsetOf]）
+     * @param lineStart 本行在段落文本中的起始下标
+     * @param lineEnd 本行在段落文本中的结束下标（不含）
+     * @return 合并后的样式数组；无任何命中时原样返回入参（可能是 null）
+     */
+    private fun mergeBookmarkStyles(
+        charStyles: Array<CharStyle?>?,
+        textLength: Int,
+        chapterOffset: Int,
+        lineStart: Int,
+        lineEnd: Int,
+    ): Array<CharStyle?>? {
+        if (chapterHighlights.isEmpty()) return charStyles
+        if (textLength <= 0 || lineEnd <= lineStart) return charStyles
+        var result = charStyles
+        chapterHighlights.forEach { highlight ->
+            // 用 Long 做偏移换算：跨章高亮的 end 是 Int.MAX_VALUE，直接加会溢出成负数
+            val start = (lineStart + (highlight.start.toLong() - chapterOffset))
+                .coerceIn(lineStart.toLong(), lineEnd.toLong()).toInt()
+            val end = (lineStart + (highlight.end.toLong() - chapterOffset))
+                .coerceIn(lineStart.toLong(), lineEnd.toLong()).toInt()
+            if (start >= end) return@forEach
+            val active = result ?: arrayOfNulls<CharStyle>(textLength).also { result = it }
+            val style = highlight.charStyle
+            for (index in start until end) {
+                active[index] = active[index]?.mergedWith(style) ?: style
+            }
+        }
+        return result
+    }
+
+    /**
+     * 书签高亮的渲染样式。
+     *
+     * 背景色统一压到 [HIGHLIGHT_BG_ALPHA] 透明度：书签色是不透明的荧光色，
+     * 直接铺满会把正文压得看不清；半透明叠在页面背景上才是荧光笔的观感，
+     * 且与夜间模式共用同一套取值（深色底上叠亮色同样读得清）。
+     */
+    private fun bookmarkCharStyle(style: Int, color: Int): CharStyle {
+        return when (style) {
+            Bookmark.STYLE_UNDERLINE -> CharStyle(
+                underlineMode = 1,
+                underlineColor = color,
+                underlineWidth = BOOKMARK_UNDERLINE_WIDTH,
+            )
+
+            Bookmark.STYLE_WAVY_UNDERLINE -> CharStyle(
+                underlineMode = 3,
+                underlineColor = color,
+                underlineWidth = BOOKMARK_UNDERLINE_WIDTH,
+            )
+
+            else -> CharStyle(
+                bgColor = (color and 0x00FFFFFF) or (HIGHLIGHT_BG_ALPHA shl 24),
+            )
+        }
+    }
+
+    /**
+     * 书签 → 本章的渲染区间。返回 null 表示这条书签在本章不需要渲染
+     * （脏数据、位置书签、或区间没覆盖到本章）。
+     */
+    private fun Bookmark.toCompiledHighlight(chapterIndex: Int): CompiledBookmarkHighlight? {
+        if (!isTextHighlight || !coversChapter(chapterIndex)) return null
+        val start = highlightStartIn(chapterIndex)
+        val end = highlightEndIn(chapterIndex)
+        if (end <= start) return null
+        return CompiledBookmarkHighlight(start, end, bookmarkCharStyle(highlightStyle, highlightColor))
+    }
+
+    /**
+     * 一条书签高亮在**某一章**内的渲染区间（章节绝对偏移，左闭右开）与样式快照。
+     *
+     * 跨章书签会在它覆盖的每一章各生成一条：首章从 `chapterPos` 起到章尾，
+     * 中间章整章，末章从章首到 `endChapterPos`（见 [Bookmark.highlightStartIn]）。
+     */
+    private class CompiledBookmarkHighlight(
+        val start: Int,
+        val end: Int,
+        val charStyle: CharStyle,
+    )
+    //endregion
+
     private fun applyHighlightRules(
         spannable: SpannableStringBuilder,
         isTitle: Boolean = false,
@@ -1641,7 +1775,7 @@ class TextChapterLayout(
         bodyHighlightStart: Int? = null,
     ) {
         // 整章样式数组按段落切片；无整章上下文时（标题、被图片分割的残段）就地扫描
-        val charStyles = if (!isTitle && bodyHighlightStyles != null && bodyHighlightStart != null) {
+        var charStyles = if (!isTitle && bodyHighlightStyles != null && bodyHighlightStart != null) {
             bodyHighlightStyles.stylesAt(bodyHighlightStart, text.length)
         } else {
             createHighlightStyles(text, isTitle)
@@ -1790,6 +1924,22 @@ class TextChapterLayout(
                 extractLineSpacing(charStyles, lineStart, lineEnd)
             // 命中行行距也要算进翻页判断，否则命中行落在页底时会被推到版面外看不见
             prepareNextPageIfNeed(durY + highlightLineTop + textHeight + highlightLineBottom)
+            // 书签文字高亮：按本行的章节绝对偏移把命中样式并进段落样式数组。
+            // 放在 prepareNextPageIfNeed 之后、calcTextLinePosition 之前：翻页会把整页移进
+            // textPages 并清空 stringBuilder，此后 stringBuilder.length 才是本行的页内偏移，
+            // 与紧接着 calcTextLinePosition 用到的值完全同一个（同公式、同入参、同调用时序），
+            // 所以算出来的偏移与写进 textLine.chapterPosition 的值必然相等。
+            // 标题行同样参与：标题也占章节偏移（calcTextLinePosition 对标题行一样编号），
+            // 选中标题生成的高亮按同一坐标系存，渲染也必须按同一坐标系读。
+            // 书签样式只带背景色/下划线，不带字体、字距与行距，因此上面已完成的测量、
+            // StaticLayout 断行与命中留白都不受影响（见 mergeBookmarkStyles）。
+            charStyles = mergeBookmarkStyles(
+                charStyles,
+                textLength = text.length,
+                chapterOffset = chapterOffsetOf(stringBuilder.length),
+                lineStart = lineStart,
+                lineEnd = lineEnd,
+            )
             // 本行命中字距实际占的宽度：两端对齐与标题对齐的基准都要含它，否则整行右侧溢出
             val lineMatchSpacing = charStyles.measureLineMatchSpacing(lineStart, lineEnd)
             val (words, widths) = measureTextSplit(lineText, widthsArray, lineStart)
@@ -3034,6 +3184,12 @@ class TextChapterLayout(
     private companion object {
         /** 气泡 js 执行的最大并发数，防止瞬时请求压垮书源服务器（见 preprocessBubbleJs 注释） */
         private const val BUBBLE_JS_MAX_CONCURRENCY = 2
+
+        /** 书签背景高亮的透明度（约 40%），见 [bookmarkCharStyle] */
+        private const val HIGHLIGHT_BG_ALPHA = 0x66
+
+        /** 书签下划线宽度（dp），与 TextLine.drawUnderlineSegment 的 dpToPx 口径一致 */
+        private const val BOOKMARK_UNDERLINE_WIDTH = 1.5f
         val FORCED_BUBBLE_TEXT_REGEX = Regex(
             """<text\b[^>]*>(.*?)</text>""",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),

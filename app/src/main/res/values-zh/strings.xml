@@ -2715,4 +2715,31 @@
     <string name="video_double_tap_backward">快退 %1$d 秒</string>
     <string name="video_double_tap_pause">已暂停</string>
     <string name="video_double_tap_resume">继续播放</string>
+
+    <!-- 所有书签页 / 书签编辑弹窗 -->
+    <string name="all_bookmark_search_hint">搜索书名、章节、原文或备注</string>
+    <string name="all_bookmark_filter_title">筛选</string>
+    <string name="all_bookmark_filter_active">筛选已生效</string>
+    <string name="all_bookmark_filter_books">全部书籍</string>
+    <string name="all_bookmark_filter_selected_book">已选书籍</string>
+    <string name="all_bookmark_filter_with_note">有备注</string>
+    <string name="all_bookmark_filter_without_note">无备注</string>
+    <string name="all_bookmark_filter_color">高亮颜色</string>
+    <string name="all_bookmark_filter_color_value">高亮颜色 %1$s</string>
+    <string name="all_bookmark_filter_clear">清空筛选条件</string>
+    <string name="all_bookmark_filter_clear_conditions">清空条件</string>
+    <string name="all_bookmark_filter_empty">没有符合当前条件的书签</string>
+    <string name="all_bookmark_count">共 %1$d 条</string>
+    <string name="all_bookmark_filtered_count">命中 %1$d / 共 %2$d</string>
+    <string name="all_bookmark_position">第 %1$d 章 · 偏移 %2$d</string>
+    <string name="all_bookmark_expanded">已展开</string>
+    <string name="all_bookmark_collapsed">已折叠</string>
+    <string name="all_bookmark_empty">还没有书签</string>
+    <string name="all_bookmark_delete_confirm">删除这条书签？</string>
+    <string name="bookmark_highlight_title">文字高亮</string>
+    <string name="bookmark_highlight_style">高亮样式</string>
+    <string name="bookmark_highlight_color">高亮颜色</string>
+    <string name="bookmark_style_background">背景色</string>
+    <string name="bookmark_style_underline">下划线</string>
+    <string name="bookmark_style_wavy">波浪线</string>
 </resources>

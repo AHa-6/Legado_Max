@@ -21,7 +21,7 @@ object DatabaseMigrations {
             migration_35_36, migration_36_37, migration_37_38, migration_38_39,
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_95_96, migration_96_97, migration_97_98, migration_98_99,
-            migration_99_100
+            migration_99_100, migration_100_101
         )
     }
 
@@ -679,4 +679,42 @@ object DatabaseMigrations {
         }
     }
 
+    // =======================================================================
+    // 100 → 101：bookmarks 表扩展为「书签 + 文字高亮」
+    //   bookmarkType      0 位置书签 / 1 高亮 / 2 规范化高亮
+    //   endChapterIndex   高亮终点章节
+    //   endChapterPos     高亮终点章内偏移
+    //   highlightStyle    0 背景 / 1 下划线 / 2 波浪线
+    //   highlightColor    ARGB，默认 -32885 (#FF7F7F)
+    // 默认值与实体 @ColumnInfo 一致：旧数据全部落到「位置书签」，行为不变。
+    // =======================================================================
+    private val migration_100_101 = object : Migration(100, 101) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // 逐列用 PRAGMA 探测：备份恢复/多进程并发迁移可能已经建好列，
+            // 直接 ALTER 会因 "duplicate column name" 中断整个迁移
+            val columns = arrayOf(
+                "bookmarkType" to "INTEGER NOT NULL DEFAULT 0",
+                "endChapterIndex" to "INTEGER NOT NULL DEFAULT 0",
+                "endChapterPos" to "INTEGER NOT NULL DEFAULT 0",
+                "highlightStyle" to "INTEGER NOT NULL DEFAULT 0",
+                "highlightColor" to "INTEGER NOT NULL DEFAULT -32885",
+            )
+            columns.forEach { (column, declaration) ->
+                var exists = false
+                try {
+                    db.query("SELECT name FROM pragma_table_info('bookmarks') WHERE name='$column'").use { cursor ->
+                        exists = cursor.moveToFirst()
+                    }
+                } catch (_: Exception) {
+                    // 极老的 SQLite 不支持 pragma_table_info，交给 ALTER 自身的错误判断
+                }
+                if (exists) return@forEach
+                try {
+                    db.execSQL("ALTER TABLE bookmarks ADD COLUMN `$column` $declaration")
+                } catch (e: Exception) {
+                    android.util.Log.e("DatabaseMigrations", "100→101: 添加 $column 列失败", e)
+                }
+            }
+        }
+    }
 }

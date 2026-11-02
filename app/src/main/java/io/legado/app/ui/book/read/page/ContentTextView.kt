@@ -1076,10 +1076,49 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                             page.getPosByLineColumn(selectStart.lineIndex, selectStart.columnIndex)
                     chapterName = chapter.title
                     bookText = getSelectedText()
+                    // 选区两端都有效、且终点确实在起点之后，才升级成「文字高亮」。
+                    // 否则保持位置书签语义（bookmarkType 默认 0）：脏区间存进去
+                    // 排版层会跳过（见 Bookmark.isTextHighlight），但导出 JSON 里会多出无意义字段。
+                    val startPos = chapterPosOfTextPos(selectStart, exclusive = false)
+                    val endPos = chapterPosOfTextPos(selectEnd, exclusive = true)
+                    if (startPos != null && endPos != null && endPos > startPos) {
+                        bookmarkType = Bookmark.TYPE_TEXT_HIGHLIGHT
+                        chapterPos = startPos
+                        // 终点单独取页：跨页选择时终点可能落在别的页，甚至上一章/下一章，
+                        // 用它自己那一页的章节与页偏移算才不会串味（渲染侧按章分别裁切）
+                        endChapterIndex = relativePage(selectEnd.relativePagePos).chapterIndex
+                        endChapterPos = endPos
+                        highlightStyle = Bookmark.STYLE_BACKGROUND
+                        highlightColor = Bookmark.DEFAULT_HIGHLIGHT_COLOR
+                    }
                 }
             }
         }
         return null
+    }
+
+    /**
+     * 把一个选区端点换算成「章节绝对偏移」，与 [TextLine.chapterPosition] 同坐标系。
+     *
+     * 端点的 `relativePagePos` 是相对当前页的偏移，可以为负（往前跨页选择），
+     * 所以要先解析到那一页，再用该页自己的 `getReadLength(index)` 作基准。
+     *
+     * @param exclusive 结束端点传 true：`selectEnd.columnIndex` 指向的是**最后一个选中列**
+     *                  （见 [getSelectedText] 的 `compareEnd <= 0` 判定），左闭右开的右端要 +1。
+     * @return 端点无效或页面没有行时返回 null，调用方按位置书签处理
+     */
+    private fun chapterPosOfTextPos(pos: TextPos, exclusive: Boolean): Int? {
+        if (!pos.isSelected()) return null
+        val page = relativePage(pos.relativePagePos)
+        if (page.lineSize == 0) return null
+        val lineIndex = pos.lineIndex.coerceIn(0, page.lineSize - 1)
+        val line = page.getLine(lineIndex)
+        // getPosByLineColumn 内部是 columns[index] 硬取下标，选到行尾时 +1 会越界，
+        // 这里先夹到 columns.size（等于「累加完整行」，语义正好是右端）
+        val columnIndex = (if (exclusive) pos.columnIndex + 1 else pos.columnIndex)
+            .coerceIn(0, line.columns.size)
+        return page.getTextChapter().getReadLength(page.index) +
+                page.getPosByLineColumn(lineIndex, columnIndex)
     }
 
     /**

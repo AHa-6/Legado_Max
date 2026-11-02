@@ -1,46 +1,39 @@
 package io.legado.app.ui.book.bookmark
 
-import android.os.Bundle
-import android.view.Menu
-import android.view.MenuItem
-import android.view.MotionEvent
-import androidx.appcompat.widget.SearchView
 import androidx.activity.viewModels
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.RecyclerView
-import io.legado.app.R
-import io.legado.app.base.VMBaseActivity
+import io.legado.app.base.BaseComposeActivity
 import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Bookmark
-import io.legado.app.databinding.ActivityAllBookmarkBinding
-import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.ui.file.HandleFileContract
-import io.legado.app.utils.applyNavigationBarPadding
-import io.legado.app.utils.applyTint
-import io.legado.app.utils.setTintMutate
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.startActivityForBook
-import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 所有书签
+ * 所有书签。
+ *
+ * View 版（RecyclerView + BookmarkAdapter + BookmarkDecoration 自绘分组头）已换成 Compose：
+ * [AllBookmarkScreen] 负责时间线分组、搜索与筛选，这里只做数据收集与动作落地。
+ *
+ * 入口不变：MyFragment 的 "bookmark" 项与 AndroidManifest 里的注册都指向本类。
  */
-class AllBookmarkActivity : VMBaseActivity<ActivityAllBookmarkBinding, AllBookmarkViewModel>(),
-    BookmarkAdapter.Callback {
+class AllBookmarkActivity : BaseComposeActivity() {
 
-    override val viewModel by viewModels<AllBookmarkViewModel>()
-    override val binding by viewBinding(ActivityAllBookmarkBinding::inflate)
-    private val adapter by lazy {
-        BookmarkAdapter(this, this)
-    }
-    private lateinit var decoration: BookmarkDecoration
+    private val viewModel by viewModels<AllBookmarkViewModel>()
+
     private val exportDir = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { uri ->
             when (it.requestCode) {
@@ -49,144 +42,54 @@ class AllBookmarkActivity : VMBaseActivity<ActivityAllBookmarkBinding, AllBookma
             }
         }
     }
-    private var searchJob: Job? = null
-    private var searchView: SearchView? = null
-    // 折叠/展开全部按钮的菜单项引用，用于动态更新图标和标题
-    private var collapseMenuItem: MenuItem? = null
-    private var allBookmarks: List<Bookmark> = emptyList()
 
-    override fun onActivityCreated(savedInstanceState: Bundle?) {
-        initView()
-        searchData("")
+    @Composable
+    override fun ComposeContent() {
+        // 直接收 DAO 的 Flow：书签的增删改都走 insert/delete，Room 会自动重发，
+        // 不需要再引一层 ViewModel 状态（导出逻辑仍在 AllBookmarkViewModel 里）
+        val bookmarks by remember {
+            appDb.bookmarkDao.flowAll()
+                .catch {
+                    AppLog.put("所有书签界面获取数据失败\n${it.localizedMessage}", it)
+                }
+                .flowOn(IO)
+        }.collectAsState(initial = emptyList())
+        var query by rememberSaveable { mutableStateOf("") }
+
+        AllBookmarkScreen(
+            bookmarks = bookmarks,
+            query = query,
+            onAction = { action -> handleAction(action) { query = it } },
+        )
+    }
+
+    /** 页面动作 → Activity 侧的实际行为（跳转、弹窗、导出） */
+    private fun handleAction(
+        action: AllBookmarkScreenAction,
+        setQuery: (String) -> Unit,
+    ) {
+        when (action) {
+            AllBookmarkScreenAction.Back -> finish()
+            is AllBookmarkScreenAction.QueryChanged -> setQuery(action.query)
+            AllBookmarkScreenAction.ExportJson -> exportDir.launch { requestCode = 1 }
+            AllBookmarkScreenAction.ExportMarkdown -> exportDir.launch { requestCode = 2 }
+            is AllBookmarkScreenAction.Open -> openBookmark(action.bookmark, action.position)
+            is AllBookmarkScreenAction.Edit -> showDialogFragment(
+                BookmarkDialog(action.bookmark, action.position)
+            )
+        }
     }
 
     /**
-     * 初始化视图：设置RecyclerView适配器、分组装饰器和触摸监听
+     * 跳转到书签位置。
+     *
+     * 文字高亮也按起点 chapterPos 跳：Max 的阅读侧还没有"按书签 time 定位并滚动到高亮"的通道
+     * （NG 是靠 chapterPos=0 + bookmarkTime extra 实现的），起点定位对高亮同样是正确落点，
+     * 少改一处阅读页状态机。等阅读侧支持 bookmarkTime 再换成 NG 的方式。
+     *
+     * 书已被删除时退回编辑弹窗：用户至少还能看到原文与备注，不至于点了没反应。
      */
-    private fun initView() {
-        decoration = BookmarkDecoration(adapter)
-        binding.recyclerView.addItemDecoration(decoration)
-        binding.recyclerView.adapter = adapter
-        binding.recyclerView.applyNavigationBarPadding()
-        binding.recyclerView.addOnItemTouchListener(object : RecyclerView.OnItemTouchListener {
-            override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
-                if (e.action == MotionEvent.ACTION_UP) {
-                    val headerPosition = decoration.getHeaderPositionForTouch(rv, e)
-                    if (headerPosition >= 0) {
-                        if (adapter.toggleGroup(headerPosition)) {
-                            adapter.setItemsWithCollapse(allBookmarks)
-                            rv.post { rv.requestLayout() }
-                            return true
-                        }
-                    }
-                }
-                return false
-            }
-
-            override fun onTouchEvent(rv: RecyclerView, e: MotionEvent) {}
-
-            override fun onRequestDisallowInterceptTouchEvent(disallowIntercept: Boolean) {}
-        })
-    }
-
-    override fun onCompatCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.bookmark, menu)
-        // 获取折叠/展开按钮的引用
-        collapseMenuItem = menu.findItem(R.id.menu_collapse_all)
-        val searchItem = menu.findItem(R.id.menu_search)
-        searchView = searchItem?.actionView as? SearchView
-        searchView?.apply {
-            applyTint(primaryTextColor)
-            queryHint = getString(R.string.search)
-            isSubmitButtonEnabled = true
-            setOnQueryTextListener(object : SearchView.OnQueryTextListener {
-                override fun onQueryTextSubmit(query: String?): Boolean {
-                    return false
-                }
-
-                override fun onQueryTextChange(newText: String?): Boolean {
-                    searchData(newText ?: "")
-                    return true
-                }
-            })
-        }
-        searchItem?.setOnActionExpandListener(object : MenuItem.OnActionExpandListener {
-            override fun onMenuItemActionExpand(item: MenuItem): Boolean {
-                binding.titleBar.toolbar.title = ""
-                return true
-            }
-
-            override fun onMenuItemActionCollapse(item: MenuItem): Boolean {
-                binding.titleBar.toolbar.title = getString(R.string.all_bookmark)
-                return true
-            }
-        })
-        return super.onCompatCreateOptionsMenu(menu)
-    }
-
-    private fun searchData(searchKey: String) {
-        searchJob?.cancel()
-        searchJob = lifecycleScope.launch {
-            val flow = if (searchKey.isBlank()) {
-                appDb.bookmarkDao.flowAll()
-            } else {
-                appDb.bookmarkDao.flowSearchAll(searchKey)
-            }
-            flow.catch {
-                AppLog.put("所有书签界面获取数据失败\n${it.localizedMessage}", it)
-            }.flowOn(IO).collect {
-                allBookmarks = it
-                adapter.setItemsWithCollapse(it)
-                updateCollapseIcon()
-            }
-        }
-    }
-
-    override fun onCompatOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            R.id.menu_collapse_all -> {
-                // 切换全部折叠/展开状态：当前已全部折叠则展开，否则折叠全部
-                val changed = if (adapter.isAllCollapsed()) {
-                    adapter.expandAll()
-                } else {
-                    adapter.collapseAll()
-                }
-                if (changed) {
-                    adapter.setItemsWithCollapse(allBookmarks)
-                    binding.recyclerView.post { binding.recyclerView.requestLayout() }
-                    updateCollapseIcon()
-                }
-            }
-
-            R.id.menu_export -> exportDir.launch {
-                requestCode = 1
-            }
-
-            R.id.menu_export_md -> exportDir.launch {
-                requestCode = 2
-            }
-        }
-        return super.onCompatOptionsItemSelected(item)
-    }
-
-    /**
-     * 根据当前折叠状态更新菜单按钮的图标和标题
-     * 全部折叠时显示展开图标，否则显示折叠图标
-     */
-    private fun updateCollapseIcon() {
-        collapseMenuItem?.let { item ->
-            if (adapter.isAllCollapsed()) {
-                item.setIcon(R.drawable.ic_expand_less)
-                item.setTitle(R.string.expand_all)
-            } else {
-                item.setIcon(R.drawable.ic_expand_more)
-                item.setTitle(R.string.collapse_all)
-            }
-            item.icon?.setTintMutate(primaryTextColor)
-        }
-    }
-
-    override fun onItemClick(bookmark: Bookmark, position: Int) {
+    private fun openBookmark(bookmark: Bookmark, position: Int) {
         lifecycleScope.launch {
             val book = withContext(IO) {
                 appDb.bookDao.getBook(bookmark.bookName, bookmark.bookAuthor)
@@ -201,13 +104,4 @@ class AllBookmarkActivity : VMBaseActivity<ActivityAllBookmarkBinding, AllBookma
             }
         }
     }
-
-    /**
-     * 书签项长按事件：显示书签编辑对话框
-     */
-    override fun onItemLongClick(bookmark: Bookmark, position: Int): Boolean {
-        showDialogFragment(BookmarkDialog(bookmark, position))
-        return true
-    }
-
 }

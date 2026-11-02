@@ -2731,4 +2731,31 @@ Night: %5$s / %6$s / %7$s / %8$s</string>
     <string name="video_double_tap_backward">Rewind %1$d s</string>
     <string name="video_double_tap_pause">Paused</string>
     <string name="video_double_tap_resume">Playing</string>
+
+    <!-- 所有书签页 / 书签编辑弹窗 -->
+    <string name="all_bookmark_search_hint">Search book, chapter, text or note</string>
+    <string name="all_bookmark_filter_title">Filter</string>
+    <string name="all_bookmark_filter_active">Filter active</string>
+    <string name="all_bookmark_filter_books">All books</string>
+    <string name="all_bookmark_filter_selected_book">Selected book</string>
+    <string name="all_bookmark_filter_with_note">With note</string>
+    <string name="all_bookmark_filter_without_note">Without note</string>
+    <string name="all_bookmark_filter_color">Highlight color</string>
+    <string name="all_bookmark_filter_color_value">Highlight color %1$s</string>
+    <string name="all_bookmark_filter_clear">Clear filter</string>
+    <string name="all_bookmark_filter_clear_conditions">Clear conditions</string>
+    <string name="all_bookmark_filter_empty">No bookmarks match the current conditions</string>
+    <string name="all_bookmark_count">%1$d bookmarks</string>
+    <string name="all_bookmark_filtered_count">%1$d of %2$d</string>
+    <string name="all_bookmark_position">Chapter %1$d · offset %2$d</string>
+    <string name="all_bookmark_expanded">Expanded</string>
+    <string name="all_bookmark_collapsed">Collapsed</string>
+    <string name="all_bookmark_empty">No bookmarks yet</string>
+    <string name="all_bookmark_delete_confirm">Delete this bookmark?</string>
+    <string name="bookmark_highlight_title">Highlight</string>
+    <string name="bookmark_highlight_style">Highlight style</string>
+    <string name="bookmark_highlight_color">Highlight color</string>
+    <string name="bookmark_style_background">Background</string>
+    <string name="bookmark_style_underline">Underline</string>
+    <string name="bookmark_style_wavy">Wavy underline</string>
 </resources>

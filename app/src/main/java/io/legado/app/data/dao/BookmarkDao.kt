@@ -48,11 +48,27 @@ interface BookmarkDao {
     fun flowSearch(bookName: String, bookAuthor: String, key: String): Flow<List<Bookmark>>
 
     @Query(
-        """select * from bookmarks 
-        where bookName = :bookName and bookAuthor = :bookAuthor 
+        """select * from bookmarks
+        where bookName = :bookName and bookAuthor = :bookAuthor
         order by chapterIndex"""
     )
     fun getByBook(bookName: String, bookAuthor: String): List<Bookmark>
+
+    /**
+     * 取覆盖到指定章节的文字高亮书签（含跨章覆盖到本章的部分），按起点排序。
+     *
+     * 排版层每章只调一次，直接在 SQL 里过滤掉位置书签与其它章节，
+     * 避免把整本书的书签全查出来再在内存里筛。
+     * `bookmarkType != 0` 排除位置书签：它们没有区间，渲染层用不上。
+     */
+    @Query(
+        """select * from bookmarks
+        where bookName = :bookName and bookAuthor = :bookAuthor
+        and bookmarkType != 0
+        and chapterIndex <= :chapterIndex and endChapterIndex >= :chapterIndex
+        order by chapterIndex, chapterPos"""
+    )
+    fun getHighlightsByChapter(bookName: String, bookAuthor: String, chapterIndex: Int): List<Bookmark>
 
     @Query(
         """SELECT * FROM bookmarks 
