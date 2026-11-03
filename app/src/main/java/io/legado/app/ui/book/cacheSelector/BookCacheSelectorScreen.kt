@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.cacheSelector
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Search
@@ -21,6 +23,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,9 +46,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.legado.app.R
+import io.legado.app.data.entities.BookGroup
 import io.legado.app.ui.book.cacheSelector.components.BookCacheItemCard
 import io.legado.app.ui.theme.pageAccentColor
 import io.legado.app.ui.theme.pageCardContainerColor
@@ -66,15 +72,25 @@ fun BookCacheSelectorScreen(
     val bookItems by viewModel.bookItems.collectAsState()
     val selectedCount by viewModel.selectedCount.collectAsState()
     val totalSelectedSize by viewModel.totalSelectedSize.collectAsState()
+    val groupFilters by viewModel.groupFilters.collectAsState()
+    val tagFilters by viewModel.tagFilters.collectAsState()
+    val userGroupMask by viewModel.userGroupMask.collectAsState()
+    val selectedGroupId by viewModel.selectedGroupId.collectAsState()
+    val selectedTag by viewModel.selectedTag.collectAsState()
     var searchKey by rememberSaveable { mutableStateOf("") }
     var searchVisible by rememberSaveable { mutableStateOf(false) }
 
     val accentColor = pageAccentColor()
-    val visibleBookItems = bookItems.filter { item ->
-        searchKey.isBlank() ||
-                item.book.name.contains(searchKey, ignoreCase = true) ||
-                item.book.getRealAuthor().contains(searchKey, ignoreCase = true)
-    }
+    // 搜索词留在屏幕（输入框临时态），分组/标签放 ViewModel（旋转屏幕、进出页面都还在），
+    // 三者在这里合成一份可见列表。「全选/取消全选」也作用在它上面，
+    // 于是筛选之后全选天然只覆盖当前能看到的书。
+    val visibleBookItems = filterBookCacheItems(
+        items = bookItems,
+        searchKey = searchKey,
+        groupId = selectedGroupId,
+        groupMask = userGroupMask,
+        tag = selectedTag
+    )
     val visibleAllSelected = viewModel.isAllSelected(visibleBookItems)
 
     AppScaffold(
@@ -174,13 +190,32 @@ fun BookCacheSelectorScreen(
                     contentPadding = PaddingValues(top = 16.dp, bottom = 16.dp + navigationBarBottomInset),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // 汇总条
+                    // 顶部区：搜索框（按需展开）→ 筛选芯片 → 汇总条
                     item {
                         if (searchVisible || searchKey.isNotEmpty()) {
                             BookCacheSearchField(
                                 query = searchKey,
                                 onQueryChange = { searchKey = it },
                                 accentColor = accentColor
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        // 分组 / 标签筛选：数据为空就不占行，免得空分类留一条白带
+                        if (groupFilters.isNotEmpty()) {
+                            GroupFilterRow(
+                                groups = groupFilters,
+                                selectedGroupId = selectedGroupId,
+                                accentColor = accentColor,
+                                onSelect = viewModel::selectGroup
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        if (tagFilters.isNotEmpty()) {
+                            TagFilterRow(
+                                tags = tagFilters,
+                                selectedTag = selectedTag,
+                                accentColor = accentColor,
+                                onSelect = viewModel::selectTag
                             )
                             Spacer(Modifier.height(8.dp))
                         }
@@ -324,4 +359,117 @@ internal fun cacheSelectorTintContainerColor(accentColor: Color): Color {
     } else {
         accentColor.copy(alpha = 0.10f)
     }
+}
+
+/**
+ * 分组筛选行。
+ *
+ * 顺序按用户排序（DAO 的 `ORDER BY order`），末尾固定挂「未分组」：
+ * 位掩码判定下「没进任何分组」是个合法结果，但它不占 `book_groups` 的任何一行，
+ * 只能自己补一个芯片。
+ */
+@Composable
+private fun GroupFilterRow(
+    groups: List<BookGroup>,
+    selectedGroupId: Long?,
+    accentColor: Color,
+    onSelect: (Long?) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        CacheFilterChip(
+            label = stringResource(R.string.all),
+            selected = selectedGroupId == null,
+            accentColor = accentColor,
+            onClick = { onSelect(null) }
+        )
+        groups.forEach { group ->
+            CacheFilterChip(
+                label = group.groupName,
+                selected = selectedGroupId == group.groupId,
+                accentColor = accentColor,
+                onClick = { onSelect(group.groupId) }
+            )
+        }
+        CacheFilterChip(
+            label = stringResource(R.string.no_group),
+            selected = selectedGroupId == GROUP_FILTER_NONE,
+            accentColor = accentColor,
+            onClick = { onSelect(GROUP_FILTER_NONE) }
+        )
+    }
+}
+
+/**
+ * 标签筛选行。
+ *
+ * 标签名统一加 `#` 前缀：它和分组行是两条长得一样的芯片带，靠前缀区分「这是标签」，
+ * 也免得分组名和标签名撞成一样的字时看不出来。
+ */
+@Composable
+private fun TagFilterRow(
+    tags: List<String>,
+    selectedTag: String?,
+    accentColor: Color,
+    onSelect: (String?) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        CacheFilterChip(
+            label = stringResource(R.string.all),
+            selected = selectedTag == null,
+            accentColor = accentColor,
+            onClick = { onSelect(null) }
+        )
+        tags.forEach { tag ->
+            CacheFilterChip(
+                label = "#$tag",
+                selected = selectedTag == tag,
+                accentColor = accentColor,
+                onClick = { onSelect(tag) }
+            )
+        }
+    }
+}
+
+/**
+ * 筛选芯片。
+ *
+ * 选中态用页面强调色的低透明度容器 + 强调色文字，与 [SummaryBar]、[BookCacheItemCard]
+ * 的选中态同一套取色（[cacheSelectorTintContainerColor]）；未选中走 surface 底配次要色文字。
+ * 不额外传 border：FilterChip 的默认描边在日夜两套主题下都能看清，自己定反而要按夜/昼分叉，
+ * 与卡片那边已有的描边取色重复。
+ */
+@Composable
+private fun CacheFilterChip(
+    label: String,
+    selected: Boolean,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Text(
+                text = label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            selectedContainerColor = cacheSelectorTintContainerColor(accentColor),
+            selectedLabelColor = accentColor
+        )
+    )
 }

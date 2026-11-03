@@ -134,11 +134,34 @@ private sealed interface BookmarkTimelineItem {
         override val stableKey: String = book.key
     }
 
+    /**
+     * 章节分组头，从属于它上面那条 [Header]（书）。
+     *
+     * 折叠是**真折叠**：折叠时其下条目根本不进列表，所以「全选」不会命中看不见的书签。
+     */
+    data class ChapterHeader(
+        val key: String,
+        val chapterIndex: Int,
+        val chapterName: String,
+        val matchedCount: Int,
+        val totalCount: Int,
+        val filtered: Boolean,
+        val collapsed: Boolean,
+    ) : BookmarkTimelineItem {
+        override val stableKey: String = key
+    }
+
     data class Entry(
         val bookmark: Bookmark,
         val position: Int,
         val firstInGroup: Boolean,
         val lastInGroup: Boolean,
+        /**
+         * 卡片是否自己显示章节名。
+         *
+         * 书下只有一章时没有章节头，章节名仍由卡片承担；有章节头时卡片再写一遍就是重复。
+         */
+        val showChapterName: Boolean,
     ) : BookmarkTimelineItem {
         override val stableKey: String = "bookmark:${bookmark.time}"
     }
@@ -176,11 +199,25 @@ internal fun AllBookmarkScreen(
     ) { mutableStateOf(emptyList<String>()) }
     val collapsedKeys = if (hasConditions) filteredCollapsedBookKeys else collapsedBookKeys
 
+    // 章节折叠另存一套：书的折叠键与章的折叠键虽然混不进彼此（键前缀不同），
+    // 但「展开这本书」不该顺带把它下面每一章都展开，两级要能各走各的
+    var collapsedChapterKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var filteredCollapsedChapterKeys by rememberSaveable(
+        selectedBookKey, selectedNoteFilter, selectedColor, normalizedQuery,
+    ) { mutableStateOf(emptyList<String>()) }
+    val chapterCollapsedKeys =
+        if (hasConditions) filteredCollapsedChapterKeys else collapsedChapterKeys
+
     val collection = remember(bookmarks, normalizedQuery, filter) {
         buildAllBookmarkCollection(bookmarks, normalizedQuery, filter)
     }
-    val timelineItems = remember(collection.groups, collapsedKeys, hasConditions) {
-        buildBookmarkTimelineItems(collection.groups, collapsedKeys.toSet(), hasConditions)
+    val timelineItems = remember(collection.groups, collapsedKeys, chapterCollapsedKeys, hasConditions) {
+        buildBookmarkTimelineItems(
+            groups = collection.groups,
+            collapsedBookKeys = collapsedKeys.toSet(),
+            collapsedChapterKeys = chapterCollapsedKeys.toSet(),
+            filtered = hasConditions,
+        )
     }
     // 当前实际展开、因而可被"全选"命中的书签。折叠组里的条目不进这个集合，
     // 否则用户看到"全选"却把看不见的书签也删了。
@@ -211,6 +248,10 @@ internal fun AllBookmarkScreen(
 
     fun updateCollapsed(keys: List<String>) {
         if (hasConditions) filteredCollapsedBookKeys = keys else collapsedBookKeys = keys
+    }
+
+    fun updateCollapsedChapters(keys: List<String>) {
+        if (hasConditions) filteredCollapsedChapterKeys = keys else collapsedChapterKeys = keys
     }
 
     fun closeTransientUi() {
@@ -388,10 +429,20 @@ internal fun AllBookmarkScreen(
                                     },
                                     onClick = {
                                         showOverflowMenu = false
-                                        updateCollapsed(
-                                            if (allCollapsed) emptyList()
-                                            else collection.groups.map { it.book.key }
-                                        )
+                                        if (allCollapsed) {
+                                            updateCollapsed(emptyList())
+                                            updateCollapsedChapters(emptyList())
+                                        } else {
+                                            updateCollapsed(collection.groups.map { it.book.key })
+                                            // 章节折叠态一并写上：只折书不折章的话，
+                                            // 下次展开某本书会看到它下面所有章节摊开，
+                                            // 与「全部折叠」的语义不符
+                                            updateCollapsedChapters(
+                                                collection.groups.flatMap { group ->
+                                                    group.chapters.map { it.key }
+                                                }
+                                            )
+                                        }
                                     },
                                 )
                                 HorizontalDivider()
@@ -457,6 +508,7 @@ internal fun AllBookmarkScreen(
                         contentType = {
                             when (it) {
                                 is BookmarkTimelineItem.Header -> "bookmark_group"
+                                is BookmarkTimelineItem.ChapterHeader -> "bookmark_chapter"
                                 is BookmarkTimelineItem.Entry -> "bookmark_entry"
                             }
                         },
@@ -466,6 +518,13 @@ internal fun AllBookmarkScreen(
                                 updateCollapsed(
                                     if (item.collapsed) collapsedKeys - item.book.key
                                     else collapsedKeys + item.book.key
+                                )
+                            }
+
+                            is BookmarkTimelineItem.ChapterHeader -> BookmarkChapterHeader(item) {
+                                updateCollapsedChapters(
+                                    if (item.collapsed) chapterCollapsedKeys - item.key
+                                    else chapterCollapsedKeys + item.key
                                 )
                             }
 
@@ -554,6 +613,75 @@ private fun BookmarkBookHeader(item: BookmarkTimelineItem.Header, onToggle: () -
             },
             contentDescription = null,
             modifier = Modifier.size(16.dp),
+            tint = secondary.copy(alpha = 0.72f),
+        )
+    }
+}
+
+/**
+ * 章节分组头：章节名 + 条数 + 折叠箭头。
+ *
+ * 视觉上刻意比 [BookmarkBookHeader] 轻一档（13sp、次要色、左侧缩进与导轨对齐）：
+ * 两级头如果一样重，书与章就分不出层级。缩进 30dp 正好是导轨那一列的宽度，
+ * 于是章节头落在它所辖书签卡片的左边缘上，归属关系不用靠猜。
+ */
+@Composable
+private fun BookmarkChapterHeader(
+    item: BookmarkTimelineItem.ChapterHeader,
+    onToggle: () -> Unit,
+) {
+    val secondary = bookmarkSecondaryTextColor()
+    val expandedDescription = stringResource(
+        if (item.collapsed) R.string.all_bookmark_collapsed else R.string.all_bookmark_expanded
+    )
+    // 老备份包 / 异常数据里章节名可能是空的，退回「章 N」，与目录侧书签栏
+    // （BookmarkAdapter 里 `getString(R.string.chapter) + " " + (index + 1)`）同口径，
+    // 不新增字符串资源
+    val chapterLabel = stringResource(R.string.chapter)
+    val title = item.chapterName.ifBlank { "$chapterLabel ${item.chapterIndex + 1}" }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 36.dp)
+            .semantics { stateDescription = expandedDescription }
+            .clickable(role = Role.Button, onClick = onToggle)
+            .padding(start = 30.dp, end = 2.dp, top = 6.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            color = secondary,
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (item.filtered) {
+                stringResource(
+                    R.string.all_bookmark_filtered_count,
+                    item.matchedCount,
+                    item.totalCount,
+                )
+            } else {
+                stringResource(R.string.all_bookmark_count, item.matchedCount)
+            },
+            color = secondary.copy(alpha = 0.72f),
+            fontSize = 11.sp,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            imageVector = if (item.collapsed) {
+                Icons.AutoMirrored.Filled.ArrowRight
+            } else {
+                Icons.Default.ExpandMore
+            },
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
             tint = secondary.copy(alpha = 0.72f),
         )
     }
@@ -657,26 +785,30 @@ private fun BookmarkTimelineCard(
                     bottom = 10.dp,
                 ),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = bookmark.chapterName,
-                        modifier = Modifier.weight(1f, fill = false),
-                        color = contentColor,
-                        fontSize = 16.sp,
-                        lineHeight = 21.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    // 高亮条目在标题右侧挂一个色点，和筛选面板的色块同色
-                    if (bookmark.isTextHighlight) {
-                        Spacer(Modifier.width(6.dp))
-                        Box(
-                            Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(Color(bookmark.highlightColor))
+                // 章节名已由章节头承载时不再重复一遍（同目录侧书签栏的处理）；
+                // 整行一起跳过，否则色点会孤零零浮在卡片顶部
+                if (item.showChapterName) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = bookmark.chapterName,
+                            modifier = Modifier.weight(1f, fill = false),
+                            color = contentColor,
+                            fontSize = 16.sp,
+                            lineHeight = 21.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                        // 高亮条目在标题右侧挂一个色点，和筛选面板的色块同色
+                        if (bookmark.isTextHighlight) {
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(bookmark.highlightColor))
+                            )
+                        }
                     }
                 }
                 if (bookmark.bookText.isNotBlank()) {
@@ -798,15 +930,21 @@ private fun BookmarkEmptyState(searching: Boolean, onClearConditions: (() -> Uni
     }
 }
 
-/** 分组 + 折叠状态 → 扁平列表项 */
+/**
+ * 分组 + 折叠状态 → 扁平列表项。
+ *
+ * 两级折叠：书头下面按章再插一层章节头，折叠的那一级其下条目**根本不进列表**
+ * （不是靠隐藏视图），所以时间线导轨不会留出空档，「全选」也命中不到看不见的书签。
+ */
 private fun buildBookmarkTimelineItems(
     groups: List<BookmarkTimelineGroup>,
-    collapsedKeys: Set<String>,
+    collapsedBookKeys: Set<String>,
+    collapsedChapterKeys: Set<String>,
     filtered: Boolean,
 ): List<BookmarkTimelineItem> {
     return buildList {
         groups.forEachIndexed { groupIndex, group ->
-            val collapsed = group.book.key in collapsedKeys
+            val collapsed = group.book.key in collapsedBookKeys
             add(
                 BookmarkTimelineItem.Header(
                     book = group.book,
@@ -817,15 +955,51 @@ private fun buildBookmarkTimelineItems(
                 )
             )
             if (collapsed) return@forEachIndexed
-            group.matches.forEachIndexed { itemIndex, indexedBookmark ->
+
+            // 只有一章的书不插章节头：书头下面紧跟一条同名章节头是纯重复。
+            // 这时章节名交回卡片自己显示（showChapterName = true），信息一条不少。
+            if (!group.hasMultipleChapters) {
+                group.matches.forEachIndexed { itemIndex, indexedBookmark ->
+                    add(
+                        BookmarkTimelineItem.Entry(
+                            bookmark = indexedBookmark.value,
+                            position = indexedBookmark.index,
+                            firstInGroup = itemIndex == 0,
+                            lastInGroup = itemIndex == group.matches.lastIndex,
+                            showChapterName = true,
+                        )
+                    )
+                }
+                return@forEachIndexed
+            }
+
+            group.chapters.forEach { chapter ->
+                val chapterCollapsed = chapter.key in collapsedChapterKeys
                 add(
-                    BookmarkTimelineItem.Entry(
-                        bookmark = indexedBookmark.value,
-                        position = indexedBookmark.index,
-                        firstInGroup = itemIndex == 0,
-                        lastInGroup = itemIndex == group.matches.lastIndex,
+                    BookmarkTimelineItem.ChapterHeader(
+                        key = chapter.key,
+                        chapterIndex = chapter.chapterIndex,
+                        chapterName = chapter.chapterName,
+                        matchedCount = chapter.matches.size,
+                        totalCount = chapter.totalCount,
+                        filtered = filtered,
+                        collapsed = chapterCollapsed,
                     )
                 )
+                if (chapterCollapsed) return@forEach
+                // 导轨的「首项 / 末项」按**所在章节**算：一条竖线串的是同一章内的书签，
+                // 跨章连成一条会把两个章节头之间的空隙也画进线里
+                chapter.matches.forEachIndexed { itemIndex, indexedBookmark ->
+                    add(
+                        BookmarkTimelineItem.Entry(
+                            bookmark = indexedBookmark.value,
+                            position = indexedBookmark.index,
+                            firstInGroup = itemIndex == 0,
+                            lastInGroup = itemIndex == chapter.matches.lastIndex,
+                            showChapterName = false,
+                        )
+                    )
+                }
             }
         }
     }

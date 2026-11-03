@@ -4,11 +4,14 @@ import android.app.Application
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.viewModelScope
 import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookGroup
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.BookTagHelper
 import io.legado.app.help.storage.BookCacheIndex
 import io.legado.app.help.storage.BookCacheSelectorConfig
 import io.legado.app.help.storage.ChapterCacheInfo
@@ -21,13 +24,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 data class BookCacheItem(
     val book: Book,
@@ -46,6 +53,44 @@ sealed class BookCacheSelectorUiState {
     data class Error(val message: String) : BookCacheSelectorUiState()
 }
 
+/** 分组筛选里的「未分组」哨兵。真实分组 id 都是非负位掩码，MIN_VALUE 不会撞上。 */
+internal const val GROUP_FILTER_NONE = Long.MIN_VALUE
+
+/**
+ * 缓存选择页可见列表的裁剪：搜索关键词 + 分组 + 标签，三个条件按「与」叠加。
+ *
+ * 做成纯函数放在 ViewModel 文件里：搜索词是输入框的临时态，分组/标签是 ViewModel 的
+ * 持久态，两个来源在屏幕层合并调用一次即可，省掉屏幕里嵌三层 filter。
+ *
+ * @param groupId null = 全部；[GROUP_FILTER_NONE] = 未分组；正数为分组位掩码
+ * @param groupMask 全部用户分组的位掩码，未分组判定要排除内置的负数组位
+ *                  （与书架标签栏 [io.legado.app.ui.main.bookshelf.filterBookshelfTagInfosByGroup] 同口径）
+ * @param tag 标签名，大小写不敏感匹配，null = 全部标签
+ */
+internal fun filterBookCacheItems(
+    items: List<BookCacheItem>,
+    searchKey: String,
+    groupId: Long?,
+    groupMask: Long,
+    tag: String?,
+): List<BookCacheItem> {
+    if (searchKey.isBlank() && groupId == null && tag == null) return items
+    val key = searchKey.trim()
+    return items.filter { item ->
+        val book = item.book
+        val matchSearch = key.isEmpty() ||
+                book.name.contains(key, ignoreCase = true) ||
+                book.getRealAuthor().contains(key, ignoreCase = true)
+        val matchGroup = when {
+            groupId == null -> true
+            groupId == GROUP_FILTER_NONE -> (book.group and groupMask) == 0L
+            else -> (book.group and groupId) > 0L
+        }
+        val matchTag = tag == null || BookTagHelper.has(book.customTag, tag)
+        matchSearch && matchGroup && matchTag
+    }
+}
+
 class BookCacheSelectorViewModel(application: Application) : BaseViewModel(application) {
 
     private val _uiState = MutableStateFlow<BookCacheSelectorUiState>(BookCacheSelectorUiState.Loading)
@@ -59,6 +104,65 @@ class BookCacheSelectorViewModel(application: Application) : BaseViewModel(appli
 
     private val _totalSelectedSize = MutableStateFlow(0L)
     val totalSelectedSize: StateFlow<Long> = _totalSelectedSize.asStateFlow()
+
+    // ── 分组 / 标签筛选 ───────────────────────────────────────────────────
+    // 筛选只裁剪内存里的列表，不改 DAO 查询：缓存书籍通常几十到几百本，而 loadBooks()
+    // 里每本书的体积都要对缓存目录做一次统计，为切个筛选重跑那套 IO 完全不划算。
+
+    /** 选中分组：null = 全部，[GROUP_FILTER_NONE] = 未分组，其余为具体分组的位掩码。 */
+    private val _selectedGroupId = MutableStateFlow<Long?>(null)
+    val selectedGroupId: StateFlow<Long?> = _selectedGroupId.asStateFlow()
+
+    /** 选中标签：null = 全部标签。 */
+    private val _selectedTag = MutableStateFlow<String?>(null)
+    val selectedTag: StateFlow<String?> = _selectedTag.asStateFlow()
+
+    /**
+     * 可供筛选的用户分组。
+     *
+     * [io.legado.app.data.dao.BookGroupDao.flowSelect] 已按 `order` 返回 `groupId >= 0` 的行；
+     * 这里只留 `groupId > 0`——0 号行不是位掩码分组，`book.group and 0` 恒为 0，
+     * 选中它只会得到空列表，摆出来是死芯片。
+     */
+    val groupFilters: StateFlow<List<BookGroup>> = appDb.bookGroupDao.flowSelect()
+        .map { groups -> groups.filter { it.groupId > 0 && it.groupName.isNotBlank() } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 全部用户分组的位掩码，判定「未分组」用。 */
+    val userGroupMask: StateFlow<Long> = groupFilters
+        .map { groups -> groups.fold(0L) { acc, group -> acc or group.groupId } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+
+    /**
+     * 当前缓存书籍里出现过的标签，按书量降序排（常用的排前面，横排芯片不用滚太远）。
+     *
+     * 数据源是 [_bookItems] 而不是全库标签：这一页只筛「有缓存的那些书」，
+     * 摆出别的书的标签就是给用户造空结果。同一本书里重复的标签 [BookTagHelper.parse]
+     * 已去重，所以每本书每个标签只计一次。
+     */
+    val tagFilters: StateFlow<List<String>> = _bookItems
+        .map { items ->
+            val counts = LinkedHashMap<String, Pair<String, Int>>()
+            items.forEach { item ->
+                BookTagHelper.parse(item.book.customTag).forEach { tag ->
+                    val key = tag.lowercase(Locale.ROOT)
+                    val old = counts[key]
+                    counts[key] = if (old == null) tag to 1 else old.first to old.second + 1
+                }
+            }
+            counts.values
+                .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first })
+                .map { it.first }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun selectGroup(groupId: Long?) {
+        _selectedGroupId.value = groupId
+    }
+
+    fun selectTag(tag: String?) {
+        _selectedTag.value = tag
+    }
 
     init {
         loadBooks()

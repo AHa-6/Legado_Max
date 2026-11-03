@@ -237,6 +237,17 @@ class ReadBookActivity :
     val textActionMenu: TextActionMenu by lazy {
         TextActionMenu(this, this)
     }
+
+    /**
+     * 菜单当前正在操作的那条划线，null 表示处于普通的文字选择态。
+     *
+     * 由 [onClickBookmark] 设置、[onTextActionMenuClosed] 清除。唯一的用途是撑起
+     * [selectedText]：点已有划线时选区已经被撤掉（蓝色高亮会盖住划线本身的颜色），
+     * `readView.getSelectText()` 返回空串，第一层菜单上的复制 / 朗读 / 搜索 / 词典
+     * 拿到的就是空文本——菜单项点下去没反应。挂上这一条后它们作用的对象是划线原文，
+     * 也就是用户刚点的那段字，第一层在高亮态下才真正可用。
+     */
+    private var activeTextHighlight: Bookmark? = null
     private val popupAction: PopupAction by lazy {
         PopupAction(this)
     }
@@ -1011,6 +1022,9 @@ class ReadBookActivity :
             } else {
                 0
             }
+        // 长按选字进来，与「点已有划线」是两种形态，这里必须把上一条划线清掉：
+        // 否则 selectedText 会继续返回那段旧文字，复制出来的是上一次点的内容
+        activeTextHighlight = null
         // 跨页选择时锚点手柄可能停在屏幕外，菜单定位点夹回屏幕内，避免菜单跑到屏幕外
         val menuTop = binding.cursorLeft.y.toInt().coerceIn(0, binding.root.height)
         val menuBottom = (binding.cursorRight.y.toInt() + binding.cursorRight.height)
@@ -1028,20 +1042,29 @@ class ReadBookActivity :
 
     /**
      * 当前选择的文本
+     *
+     * 高亮态优先返回划线原文，理由见 [activeTextHighlight]。
      */
-    override val selectedText: String get() = binding.readView.getSelectText()
+    override val selectedText: String
+        get() = activeTextHighlight?.bookText?.takeIf { it.isNotBlank() }
+            ?: binding.readView.getSelectText()
 
     /**
      * 文本选择菜单操作
      */
     override fun onMenuItemSelected(itemId: Int): Boolean {
         when (itemId) {
-            R.id.menu_aloud -> when (AppConfig.contentSelectSpeakMod) {
-                1 -> lifecycleScope.launch {
-                    binding.readView.aloudStartSelect()
+            R.id.menu_aloud -> {
+                // 「从选择的地方开始一直朗读」要读选区坐标，高亮态下选区已经撤掉，
+                // 走这条路什么都不会发生；这时统一朗读这段划线本身
+                val highlight = activeTextHighlight
+                if (highlight != null || AppConfig.contentSelectSpeakMod == 0) {
+                    speak(selectedText)
+                } else {
+                    lifecycleScope.launch {
+                        binding.readView.aloudStartSelect()
+                    }
                 }
-
-                else -> speak(binding.readView.getSelectText())
             }
 
             // R.id.menu_bookmark 不在这里处理：创建划线已经由 TextActionMenu 接管
@@ -1301,6 +1324,11 @@ class ReadBookActivity :
         }.getOrNull() ?: value
     }
 
+    /** 菜单已关闭：放掉这条划线，[selectedText] 回退成读选区 */
+    override fun onTextActionMenuClosed() {
+        activeTextHighlight = null
+    }
+
     /**
      * 文本选择菜单操作完成
      */
@@ -1325,6 +1353,11 @@ class ReadBookActivity :
     override fun onClickBookmark(bookmark: Bookmark, x: Float, y: Float) = binding.run {
         // 点划线时不该停留在文字选择态：选区那层蓝色高亮会盖住面板里刚改的颜色
         cancelTextSelectionForHighlight()
+        // 选区撤掉之后 getSelectText() 就是空的，先把这段划线的原文挂上，
+        // 第一层菜单的复制 / 朗读 / 搜索才有东西可用。
+        // 顺序在 dismiss 之后：cancelTextSelectionForHighlight 可能连带关掉旧菜单，
+        // 那里的关闭回调会把这个字段清空
+        activeTextHighlight = bookmark
         val navigationBarHeight =
             if (!ReadBookConfig.hideNavigationBar && navigationBarGravity == Gravity.BOTTOM) {
                 binding.navigationBar.height

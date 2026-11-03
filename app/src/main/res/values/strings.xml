@@ -2760,4 +2760,5 @@ Night: %5$s / %6$s / %7$s / %8$s</string>
     <string name="bookmark_style_background">Background</string>
     <string name="bookmark_style_underline">Underline</string>
     <string name="bookmark_style_wavy">Wavy underline</string>
+    <string name="delete_highlight">Delete highlight</string>
 </resources>

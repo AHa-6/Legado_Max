@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -71,16 +72,22 @@ fun AppAdaptiveDialog(
 }
 
 /**
- * [AppAdaptiveDialog] 的面板部分（不含 Dialog 窗口）
+ * [AppAdaptiveDialog] 的面板部分（不含 Dialog 窗口）。
+ *
+ * 同包的 [AppConfirmDialog] 也用它，两处弹窗因此长得完全一样——确认弹窗原本是
+ * `AlertDialog` + `RectangleShape`，在一屋子 extraLarge 圆角的面板里像一块直角贴纸。
+ *
+ * @param containerColor 面板底色，默认与其它弹窗同口径
  */
 @Composable
-private fun AppAdaptiveDialogPanel(
+internal fun AppAdaptiveDialogPanel(
     title: String,
     modifier: Modifier = Modifier,
     description: String? = null,
     minWidth: Dp = 280.dp,
     maxWidth: Dp = 560.dp,
     maxHeightFraction: Float = 0.9f,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     buttons: (@Composable RowScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -95,7 +102,7 @@ private fun AppAdaptiveDialogPanel(
                 .wrapContentHeight()
                 .heightIn(max = maxHeight * maxHeightFraction),
             shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = containerColor,
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
                 Text(

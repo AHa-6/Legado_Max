@@ -21,6 +21,7 @@ import androidx.appcompat.view.menu.MenuItemImpl
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -28,9 +29,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -45,6 +52,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
@@ -71,6 +80,9 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.help.config.AppConfig
 import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.glassPanelBorderColor
+import io.legado.app.ui.theme.glassPanelContainerTopColor
+import io.legado.app.ui.theme.pageAccentColor
 import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.printOnDebug
@@ -81,11 +93,32 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-/** 卡片圆角，对应 shape_card_view.xml 的 3dp */
-private val CardCornerRadius = 3.dp
+/**
+ * 菜单卡片圆角。
+ *
+ * 旧值 3dp 来自 shape_card_view.xml——那是给嵌在页面里的卡片用的，浮在正文上的弹出菜单
+ * 用同样的圆角会显得像被裁过一角的方框。14dp 与 Max 自己的 GlassCard（16dp）、
+ * 书签卡（10dp）落在同一档，视觉上属于同一套组件而不是遗留控件。
+ */
+private val MenuCardCornerRadius = 14.dp
 
-/** 卡片内边距，对应 popup_action_menu.xml 根节点的 5dp */
-private val CardPadding = 5.dp
+/** 卡片内边距：比旧 XML 的 5dp 略大，圆角变大后内容要离边远一点才不显得挤 */
+private val CardPadding = 8.dp
+
+/**
+ * 卡片发丝边宽度。
+ *
+ * ## 为什么菜单没有阴影
+ * 浮层阴影要么走 `Modifier.shadow`，要么走 [PopupWindow.setElevation]，两条路在这里都不通：
+ * popup 是 WRAP_CONTENT，窗口尺寸正好等于内容尺寸，Compose 画的阴影落在内容边界之外，
+ * 全部被窗口裁掉；窗口级 elevation 则要求 popup 的 background 能给出一个不透明轮廓，
+ * 而这里刻意用透明背景（换成不透明就会看到一块方角底板）。
+ *
+ * 要阴影就得让窗口比内容大一圈（给 background 加 padding 当留白），代价是菜单定位、
+ * 拖动 clamp 全都要跟着补偿这一圈偏移。菜单是浮在正文上的小浮层，一层淡阴影换不回这个复杂度，
+ * 所以质感改由「14dp 圆角 + 发丝描边 + 分隔线 + 分段间距」表达。
+ */
+private val MenuCardBorderWidth = 1.dp
 
 /** 菜单项图标尺寸，旧实现按 18 * density 手工绘制位图 */
 private val MenuIconSize = 18.dp
@@ -108,14 +141,16 @@ private val MoreButtonSize = 24.dp
 private const val KEEP_SIZE = -1
 
 /**
- * 划线面板的最大宽度（dp），必须与 TextHighlightPanel 的 `PanelMaxWidth` 一致。
+ * 划线态菜单的估算宽度（dp），必须与 TextHighlightPanel 的 `HighlightStyleBarWidth` 一致。
  *
- * 这里需要它来把面板横向居中：popup 是 WRAP_CONTENT，showAtLocation 之前量不到实际宽度，
- * 只能按上界估。估大了只是居中略偏，不会跑出屏幕（后面还有 clamp）。
+ * 用途是把菜单横向居中于点击点：popup 是 WRAP_CONTENT，showAtLocation 之前量不到实际宽度，
+ * 只能估。样式条是这一形态下唯一的定宽元素（268dp），第一层菜单在默认可见项数量下
+ * 与之相差不到 10dp，所以按它估居中偏差在几个 dp 内；估偏了也只是略歪，
+ * 后面还有 coerceIn 兜住不会跑出屏幕。
  */
-private const val PANEL_MAX_WIDTH_DP = 300
+private const val HIGHLIGHT_MENU_WIDTH_DP = 268
 
-/** 面板与点击位置之间留的间隙（dp），避免面板正好压住被点的那行字 */
+/** 菜单与点击位置之间留的间隙（dp），避免菜单正好压住被点的那行字 */
 private const val highlightAnchorGap = 8
 
 /**
@@ -185,18 +220,16 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     private val uiState = UiState()
 
     // ─────────────── 划线操作态 ───────────────
-    // 点击已有划线时菜单换成「划线面板」：改备注、改样式颜色、删除都在菜单内完成，
-    // 不再弹 BookmarkDialog。形态与 NG 一致（TextHighlightPopupMode 两态），
-    // 面板 UI 见 TextHighlightPanel.kt。
+    // 点击已有划线时，菜单**不换形态**：第一层照常显示，只在它下面追加一条划线操作区
+    // （备注开关 / 样式 / 颜色），「书签」槽位换成「删除划线」。
+    // 不再弹 BookmarkDialog，也没有「第一层菜单 → 第二层编辑」的两步跳转。
+    // 操作区 UI 见 TextHighlightPanel.kt。
     //
     // 状态同样放在组合之外：popup 内容跨「拖动移窗」「更多展开」多次重组，
     // 草稿若活在 remember 里会在重组时丢。
 
     /** 当前正在操作的划线，null 表示菜单处于普通文字选择形态 */
     private val textHighlightState = mutableStateOf<Bookmark?>(null)
-
-    /** 面板形态：工具栏 / 备注预览 */
-    private val textHighlightPopupModeState = mutableStateOf(TextHighlightPopupMode.TOOLBAR)
 
     /** 备注输入框是否展开（展开时要放行输入法，见 [setNoteEditorVisible]） */
     private val noteEditorVisibleState = mutableStateOf(false)
@@ -278,10 +311,12 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
             commitTextHighlightNote()
             highlightMenuGeneration++
             textHighlightState.value = null
-            textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
             noteEditorVisibleState.value = false
             noteDraftState.value = ""
             isFocusable = false
+            // 放在自己的状态清干净之后：宿主的 selectedText 会回退成读选区，
+            // 反过来先通知宿主就可能让它在切换瞬间读到半新半旧的值
+            callBack.onTextActionMenuClosed()
             inputMethodMode = PopupWindow.INPUT_METHOD_NOT_NEEDED
             // 不及时放开会对已 dismiss 的窗口根保持强引用
             popupRoot = null
@@ -484,7 +519,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      * 定位策略与 [show] 同源（上方空间充裕就 `Gravity.BOTTOM` 向上生长，否则向下），
      * 差别是锚点只有一个点击位置，没有选区手柄那一套。
      *
-     * 横向刻意**居中于点击点**再夹回屏幕：面板宽度被 PanelMaxWidth 限定，
+     * 横向刻意**居中于点击点**再夹回屏幕：菜单宽度按 [HIGHLIGHT_MENU_WIDTH_DP] 估算，
      * 若照 [show] 那样直接把 x 当左边，点在屏幕右半边时面板会有一半在屏幕外。
      *
      * @param x 点击位置 X（视图坐标，与 [show] 的 startX 同口径）
@@ -499,7 +534,6 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     ) {
         upMenu()
         textHighlightState.value = textHighlight
-        textHighlightPopupModeState.value = initialTextHighlightPopupMode(textHighlight)
         noteDraftState.value = textHighlight.content
         // 直接复位而不是走 setNoteEditorVisible：那一对方法要动 isFocusable，
         // 而此刻窗口还没显示，动了也白动
@@ -508,7 +542,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
 
         val density = context.resources.displayMetrics.density
         val gap = (highlightAnchorGap * density).roundToInt()
-        val panelWidth = (PANEL_MAX_WIDTH_DP * density).roundToInt()
+        val panelWidth = (HIGHLIGHT_MENU_WIDTH_DP * density).roundToInt()
         val rootWidth = view.rootView.width.takeIf { it > 0 }
             ?: context.resources.displayMetrics.widthPixels
 
@@ -558,7 +592,6 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      */
     private fun deleteTextHighlight(highlight: Bookmark) {
         textHighlightState.value = null
-        textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
         noteEditorVisibleState.value = false
         noteDraftState.value = ""
         isFocusable = false
@@ -620,41 +653,71 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     }
 
     /**
-     * 从备注预览态进入工具栏态。
-     *
-     * @param openNoteEditor true 时顺带展开备注输入框（预览态点「备注」走这条）
-     */
-    private fun showTextHighlightToolbar(openNoteEditor: Boolean) {
-        if (!isShowing || textHighlightState.value == null) return
-        if (textHighlightPopupModeState.value != TextHighlightPopupMode.NOTE_PREVIEW) {
-            if (openNoteEditor) setNoteEditorVisible(true)
-            return
-        }
-        textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
-        if (openNoteEditor) setNoteEditorVisible(true)
-    }
-
-    /**
      * 菜单内容
      *
      * 布局沿用旧 XML 的三段结构：第一行横向放菜单项与「更多」按钮，第二行纵向放更多项；
      * 展开模式（[UiState.expanded]）则把全部条目一次性横向铺开、不出现按钮。
      */
+    /**
+     * 菜单内容
+     *
+     * 布局是**一段式**的：第一层菜单始终在，划线态只做两件事——把「书签」槽位换成
+     * 「删除划线」，再在第一层下面追加一条操作区（备注开关、三种样式、五个颜色）。
+     *
+     * 旧实现是 `if (textHighlight != null) { 整卡换成编辑面板; return }`，
+     * 结果点已有划线时复制 / 朗读 / 搜索全部消失，看起来就是弹了个书签编辑页。
+     * 现在这两类动作同时可见，不必再走「第一层菜单 → 第二层编辑」两步。
+     */
     @Composable
     private fun TextActionMenuContent() {
         val localContext = LocalContext.current
         // 卡片底色取 @color/background_card（昼 md_grey_100 / 夜 md_grey_850），
-        // 与 colorScheme.surface 不是同一个值，用 surface 会让卡片颜色偏离原设计
-        val containerColor = Color(ContextCompat.getColor(localContext, R.color.background_card))
+        // 与 colorScheme.surface 不是同一个值，用 surface 会让卡片颜色偏离原设计。
+        //
+        // 玻璃质感叠在它上面而不是直接用：glassPanelContainerTopColor 只有 44%（夜 23%）
+        // 不透明度，菜单浮在正文上，真半透明的卡面会让底下的字从卡片里透上来、和菜单文字
+        // 叠成一团。compositeOver 先把它压到不透明底色上，昼 / 夜 / 墨水屏各自取到
+        // 该有的提亮，同时一个字都不漏。
+        val baseCardColor = Color(ContextCompat.getColor(localContext, R.color.background_card))
+        val containerColor = glassPanelContainerTopColor().compositeOver(baseCardColor)
         // 文字与图标颜色取 @color/primaryText，与旧布局取值口径一致
         val contentColor = Color(ContextCompat.getColor(localContext, R.color.primaryText))
+        // 划线操作区的强调色，与「我的」等页面同一口径
+        val accentColor = pageAccentColor()
+        // 描边色：夜间用 glassPanelBorderColor 的白发丝（白线在黑卡上才看得见），
+        // 昼间卡面本身就接近白，白发丝等于没有边，改用 8% 的黑线勾出一圈轮廓
+        val borderColor = if (MaterialTheme.colorScheme.background.luminance() < 0.2f) {
+            glassPanelBorderColor()
+        } else {
+            Color.Black.copy(alpha = 0.08f)
+        }
+        val textHighlight = textHighlightState.value
+        val shape = RoundedCornerShape(MenuCardCornerRadius)
+
+        // 划线态的第一层条目：把「书签」槽换成「删除划线」。分页口径与 reloadMenuItems
+        // 保持一致——先合并再替换再切回两页，避免两页各自补一个兜底删除项。
+        val pagedEntries = remember(uiState.visibleItems, uiState.moreItems, textHighlight) {
+            if (textHighlight == null) {
+                uiState.visibleItems to uiState.moreItems
+            } else {
+                val merged = (uiState.visibleItems + uiState.moreItems).withDeleteHighlight()
+                val head = uiState.visibleItems.size
+                merged.take(head) to merged.drop(head)
+            }
+        }
+        val allEntries = remember(uiState.allItems, textHighlight) {
+            if (textHighlight == null) uiState.allItems else uiState.allItems.withDeleteHighlight()
+        }
 
         Column(
             modifier = Modifier
-                .clip(RoundedCornerShape(CardCornerRadius))
+                .clip(shape)
                 .background(containerColor)
+                // 发丝描边压在内容之下、裁在圆角之内：菜单没有阴影（原因见 MenuCardBorderWidth
+                // 上的注释），边界全靠这道线交代，缺了它卡片会像一块贴纸糊在正文上
+                .border(MenuCardBorderWidth, borderColor, shape)
                 // 拖动手势挂在整张卡片上（padding 之前）：放在 padding 之后的话，
-                // 5dp 的卡片内边距就不属于可拖区域，手指压在边缘那条上拖不动。
+                // 卡片内边距就不属于可拖区域，手指压在边缘那条上拖不动。
                 //
                 // 与子项点击不冲突：detectDragGestures 内部用
                 // `awaitFirstDown(requireUnconsumed = false)`，即便子项的 combinedClickable
@@ -678,43 +741,13 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 )
                 .padding(CardPadding)
         ) {
-            // 划线形态：整个卡片换成划线操作面板，不显示文字菜单项
-            val textHighlight = textHighlightState.value
-            if (textHighlight != null) {
-                if (textHighlightPopupModeState.value == TextHighlightPopupMode.NOTE_PREVIEW) {
-                    HighlightNotePreview(
-                        note = textHighlight.content,
-                        contentColor = contentColor,
-                        onEdit = { showTextHighlightToolbar(openNoteEditor = true) },
-                        onDetail = { showTextHighlightToolbar(openNoteEditor = false) },
-                        onDismiss = ::closeHighlightMenu,
-                    )
-                } else {
-                    HighlightToolbar(
-                        highlight = textHighlight,
-                        contentColor = contentColor,
-                        noteDraft = noteDraftState.value,
-                        noteEditorVisible = noteEditorVisibleState.value,
-                        onNoteEditorVisibleChange = ::setNoteEditorVisible,
-                        onNoteDraftChange = { noteDraftState.value = it },
-                        onStyleChange = { style ->
-                            updateTextHighlight(style, textHighlight.highlightColor)
-                        },
-                        onColorChange = { color ->
-                            updateTextHighlight(textHighlight.highlightStyle, color)
-                        },
-                        onDelete = { deleteTextHighlight(textHighlight) },
-                        onDismiss = ::closeHighlightMenu,
-                    )
-                }
-                return@Column
-            }
+            // ── 第一段：文字动作菜单，划线态下也照常显示 ──
             if (uiState.expanded) {
-                MenuItemFlow(uiState.allItems, contentColor)
+                MenuItemFlow(allEntries, contentColor)
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (!uiState.showingMore) {
-                        MenuItemFlow(uiState.visibleItems, contentColor)
+                        MenuItemFlow(pagedEntries.first, contentColor)
                     }
                     if (uiState.moreItems.isNotEmpty()) {
                         MoreButton(
@@ -726,9 +759,60 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 }
                 if (uiState.showingMore) {
                     Column {
-                        uiState.moreItems.forEach { entry ->
+                        pagedEntries.second.forEach { entry ->
                             MenuItemCell(entry, contentColor)
                         }
+                    }
+                }
+            }
+            // ── 第二段：划线操作区，只在高亮态追加，宽度与样式条对齐 ──
+            if (textHighlight != null) {
+                Spacer(Modifier.height(HighlightSectionGap))
+                Column(
+                    modifier = Modifier.width(HighlightStyleBarWidth),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    // 分隔线把「这段文字能做什么」和「这条划线长什么样」切成两段，
+                    // 比单纯空出一行间距更能说明这是同一张卡片上的两组控件
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = contentColor.copy(alpha = 0.10f),
+                    )
+                    Spacer(Modifier.height(HighlightSectionGap))
+                    HighlightStyleBar(
+                        highlight = textHighlight,
+                        noteEditorVisible = noteEditorVisibleState.value,
+                        noteDraft = noteDraftState.value,
+                        accentColor = accentColor,
+                        contentColor = contentColor,
+                        onNoteEditorVisibleChange = ::setNoteEditorVisible,
+                        onStyleChange = { style ->
+                            updateTextHighlight(style, textHighlight.highlightColor)
+                        },
+                        onColorChange = { color ->
+                            updateTextHighlight(textHighlight.highlightStyle, color)
+                        },
+                    )
+                    val note = noteDraftState.value
+                    if (noteEditorVisibleState.value) {
+                        Spacer(Modifier.height(HighlightNoteEditorGap))
+                        HighlightNoteEditor(
+                            value = note,
+                            onValueChange = { noteDraftState.value = it },
+                            // 收起输入框会顺带提交草稿，见 setNoteEditorVisible
+                            onDone = { setNoteEditorVisible(false) },
+                            accentColor = accentColor,
+                            contentColor = contentColor,
+                        )
+                    } else if (note.isNotBlank()) {
+                        // 已有备注：补一行摘要，点它直接进编辑，省掉「先点备注按钮」这一步
+                        Spacer(Modifier.height(HighlightNoteEditorGap))
+                        HighlightNoteSummary(
+                            note = note,
+                            accentColor = accentColor,
+                            contentColor = contentColor,
+                            onClick = { setNoteEditorVisible(true) },
+                        )
                     }
                 }
             }
@@ -821,19 +905,26 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      * 取消选择，任何一条分支都必须走到。
      */
     private fun onEntryClick(entry: MenuEntry) {
-        // 「书签」这一项在划线形态下含义不同：
-        // - 普通形态（textHighlight == null）：把当前选区存成划线，然后**菜单不关**，
-        //   原地切到划线面板继续改备注 / 样式 / 颜色；
-        // - 划线形态（点已有划线进来的）：整张卡片已经被面板替换
-        //   （见 TextActionMenuContent 的高亮分支），文字菜单项一个都不显示，
-        //   所以这一项根本点不到，这里的 null 判断只是双保险。
-        if (entry.itemId == R.id.menu_bookmark && textHighlightState.value == null) {
-            createTextHighlight()
+        val highlight = textHighlightState.value
+        // 「书签」这一项在两种形态下是相反的动作，共用同一个 itemId：
+        // - 普通形态（highlight == null）：把当前选区存成划线，然后**菜单不关**，
+        //   原地追加划线操作区继续改备注 / 样式 / 颜色；
+        // - 高亮形态：这一项已经被换成「删除划线」（见 withDeleteHighlight）。
+        // 两者都不走宿主，也不走 onMenuActionFinally——菜单要留着。
+        if (entry.itemId == R.id.menu_bookmark) {
+            if (highlight != null) {
+                deleteTextHighlight(highlight)
+            } else {
+                createTextHighlight()
+            }
             return
         }
+        // 其余动作在高亮态下同样可用：宿主的 selectedText 会返回划线原文
+        // （见 ReadBookActivity.selectedText），所以复制 / 分享 / 朗读 / 搜索拿到的
+        // 都是用户点的那段文字，而不是一个空选区。
         commitTextHighlightNote()
         if (!callBack.onMenuItemSelected(entry.itemId)) {
-            onMenuItemSelected(entry.item)
+            entry.item?.let { onMenuItemSelected(it) }
         }
         callBack.onMenuActionFinally()
     }
@@ -869,7 +960,9 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 }
                 textHighlightState.value = created
                 noteDraftState.value = created.content
-                textHighlightPopupModeState.value = initialTextHighlightPopupMode(created)
+                // 备注输入框保持收起：刚存下来的划线通常没有备注，
+                // 直接弹键盘会挡住用户刚划的那段字
+                noteEditorVisibleState.value = false
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -892,6 +985,37 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
             context.toastOnUi("切换为朗读选择内容")
         }
     }
+
+    /**
+     * 高亮态下的第一层条目：把「书签」槽位换成「删除划线」。
+     *
+     * 点已有划线时再放一个「书签」没有意义（这段文字已经是划线了），而删除是这一形态下
+     * 唯一的破坏性动作，占掉那个槽位最省地方，用户也不必去二级面板里找。
+     * 图标换成垃圾桶，标题换成「删除划线」，避免同一个图标在两种形态下表示相反的动作。
+     */
+    private fun List<MenuEntry>.withDeleteHighlight(): List<MenuEntry> {
+        // 没有「书签」槽位可换：用户在文本菜单设置里把「书签」整条隐藏了。
+        // 这时第一层行首补一个删除项——否则点开一条已有划线，屏幕上没有任何入口能删掉它，
+        // 只能绕去书签列表里找。
+        val hasSlot = any { it.itemId == R.id.menu_bookmark }
+        val mapped = map { entry ->
+            if (entry.itemId == R.id.menu_bookmark) deleteHighlightEntry(entry.item) else entry
+        }
+        return if (hasSlot) mapped else listOf(deleteHighlightEntry(null)) + mapped
+    }
+
+    /**
+     * 合成「删除划线」条目。
+     *
+     * @param item 被替换掉的「书签」原始菜单项，可为 null（用户把「书签」隐藏时没有可继承的项）
+     */
+    private fun deleteHighlightEntry(item: MenuItemImpl?): MenuEntry = MenuEntry(
+        title = context.getString(R.string.delete_highlight),
+        itemId = R.id.menu_bookmark,
+        item = item,
+        iconResId = R.drawable.ic_outline_delete,
+        iconBitmap = null,
+    )
 
     /** 把 MenuItemImpl 转成展示条目，图标只在这里解析一次 */
     private fun MenuItemImpl.toMenuEntry(): MenuEntry {
@@ -1022,14 +1146,16 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      *
      * @param title 展示文字（已套用用户自定义标题）
      * @param itemId 菜单项 ID，回传给宿主
-     * @param item 原始菜单项，点击时从中取 intent 执行
+     * @param item 原始菜单项，点击时从中取 intent 执行。
+     *   「删除划线」是菜单自己合成的条目（见 [deleteHighlightEntry]），没有对应的
+     *   MenuItemImpl，所以这里可空——它的动作在 [onEntryClick] 里就地处理，不落到 intent。
      * @param iconResId 内置项图标资源；非内置项为 null
      * @param iconBitmap 其他应用图标，仅内置项为 null 时才尝试解析
      */
     private class MenuEntry(
         val title: String,
         val itemId: Int,
-        val item: MenuItemImpl,
+        val item: MenuItemImpl?,
         val iconResId: Int?,
         val iconBitmap: ImageBitmap?
     )
@@ -1088,6 +1214,17 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
          * 调用后菜单会自行关闭，实现方不必再 dismiss。
          */
         fun onTextHighlightDelete(bookmark: Bookmark)
+
+        /**
+         * 菜单已经关闭（任何一条关闭路径都会走到）。
+         *
+         * 宿主用它清掉「当前正在操作的划线」：[CallBack.selectedText] 在高亮态下返回划线原文，
+         * 菜单关掉之后如果这个字段还留着，下一次长按选字时宿主会误以为还在高亮态，
+         * 把用户刚选的那段文字换成上一条划线的原文。
+         *
+         * 只在 dismiss 监听里调一次，不假设宿主是否自己做过清理。
+         */
+        fun onTextActionMenuClosed()
 
         /**
          * 菜单操作完成后的回调

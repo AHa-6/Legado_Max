@@ -43,10 +43,39 @@ internal data class BookmarkBookOption(
     val count: Int,
 )
 
-/** 同一本书下命中的书签，[IndexedValue.index] 是它在全量列表里的下标 */
+/**
+ * 同一本书下命中的书签，[IndexedValue.index] 是它在全量列表里的下标。
+ *
+ * 书下面再按章分一层（[chapters]）：所有书签页原本只按书折叠，一本书里几百条书签
+ * 摊成长长一条，翻到某一章的书签只能靠滑——目录侧的书签栏早就按章折叠了，两处口径不一致。
+ */
 internal data class BookmarkTimelineGroup(
     val book: BookmarkBookOption,
     val matches: List<IndexedValue<Bookmark>>,
+    /** 按阅读顺序（chapterIndex 升序）分好的章节组 */
+    val chapters: List<BookmarkChapterGroup>,
+) {
+    /**
+     * 是否按章分组展示。
+     *
+     * 只有一章的书不画章节头：书头下面紧跟一条「第 x 章」纯属重复，
+     * 那一章的章节名继续由书签卡片自己显示（见 BookmarkTimelineItem.Entry.showChapterName）。
+     */
+    val hasMultipleChapters: Boolean get() = chapters.size > 1
+}
+
+/**
+ * 一章内命中的书签。
+ *
+ * @param key 折叠键，全局唯一（书键 + 章下标）
+ * @param totalCount 这一章在**不受筛选影响**的全量书签里的条数，用于「命中 x / 共 y」
+ */
+internal data class BookmarkChapterGroup(
+    val key: String,
+    val chapterIndex: Int,
+    val chapterName: String,
+    val matches: List<IndexedValue<Bookmark>>,
+    val totalCount: Int,
 )
 
 /** 一次筛选 + 搜索的完整结果 */
@@ -66,6 +95,15 @@ internal data class AllBookmarkCollection(
  */
 internal fun bookmarkBookKey(bookName: String, bookAuthor: String): String =
     "group:${bookName.length}:$bookName\u0000$bookAuthor"
+
+/**
+ * 章节折叠键。
+ *
+ * 书键本身已经带长度前缀与 \u0000 分隔，这里再拼一个章下标就不会与任何书键或
+ * 别的书的章键撞上——折叠状态是书键与章键混在同一个集合里存的。
+ */
+internal fun bookmarkChapterKey(bookKey: String, chapterIndex: Int): String =
+    "chapter:$bookKey\u0000$chapterIndex"
 
 /**
  * 按书籍分组并套用搜索词与筛选条件。
@@ -99,15 +137,45 @@ internal fun buildAllBookmarkCollection(
         if (filter.bookKey != null && filter.bookKey != book.key) {
             return@mapNotNull null
         }
-        val matches = indexedGroups.getValue(book.key).filter { (_, bookmark) ->
+        // 全量（不受筛选影响）留着算每章的总条数，命中结果留着分组
+        val all = indexedGroups.getValue(book.key)
+        val matches = all.filter { (_, bookmark) ->
             bookmark.matchesNoteFilter(filter.noteFilter) &&
                 (filter.color == null ||
                     bookmark.isTextHighlight && bookmark.highlightColor == filter.color) &&
                 bookmark.matchesQuery(normalizedQuery, searchBookMetadata)
         }
-        if (matches.isEmpty()) null else BookmarkTimelineGroup(book, matches)
+        if (matches.isEmpty()) {
+            null
+        } else {
+            BookmarkTimelineGroup(book, matches, buildChapterGroups(book.key, all, matches))
+        }
     }
     return AllBookmarkCollection(books, colors, groups, groups.sumOf { it.matches.size })
+}
+
+/**
+ * 把一本书的命中结果按章再分一层。
+ *
+ * @param all 这本书的全量书签，只用来统计每章的总条数（「命中 x / 共 y」的分母）
+ * @param matches 命中的书签。DAO 的 flowAll 已经按 `chapterIndex, chapterPos` 排好，
+ *   `groupBy` 用 LinkedHashMap 保序，所以章节顺序就是阅读顺序，组内顺序就是章内顺序
+ */
+private fun buildChapterGroups(
+    bookKey: String,
+    all: List<IndexedValue<Bookmark>>,
+    matches: List<IndexedValue<Bookmark>>,
+): List<BookmarkChapterGroup> {
+    val totals = all.groupingBy { it.value.chapterIndex }.eachCount()
+    return matches.groupBy { it.value.chapterIndex }.map { (chapterIndex, members) ->
+        BookmarkChapterGroup(
+            key = bookmarkChapterKey(bookKey, chapterIndex),
+            chapterIndex = chapterIndex,
+            chapterName = members.first().value.chapterName,
+            matches = members,
+            totalCount = totals[chapterIndex] ?: members.size,
+        )
+    }
 }
 
 private fun Bookmark.matchesNoteFilter(filter: BookmarkNoteFilter): Boolean = when (filter) {

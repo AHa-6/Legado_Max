@@ -2744,4 +2744,5 @@
     <string name="bookmark_style_background">背景色</string>
     <string name="bookmark_style_underline">下划线</string>
     <string name="bookmark_style_wavy">波浪线</string>
+    <string name="delete_highlight">删除划线</string>
 </resources>
