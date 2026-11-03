@@ -97,6 +97,11 @@
             android:title="@string/bookmark_search_content"
             app:showAsAction="never" />
 
+        <item
+            android:id="@+id/menu_bookmark_toggle_group"
+            android:title="@string/collapse_all"
+            app:showAsAction="never" />
+
     </group>
 
     <item

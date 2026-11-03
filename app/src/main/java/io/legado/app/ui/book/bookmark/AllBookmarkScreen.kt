@@ -1,5 +1,6 @@
 package io.legado.app.ui.book.bookmark
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -27,12 +28,17 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowRight
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -98,6 +104,19 @@ internal sealed interface AllBookmarkScreenAction {
     /** @param position 该书签在全量列表里的下标，编辑弹窗用它判断是否"可删除" */
     data class Open(val bookmark: Bookmark, val position: Int) : AllBookmarkScreenAction
     data class Edit(val bookmark: Bookmark, val position: Int) : AllBookmarkScreenAction
+
+    // ---- 批量管理（第 8 项）----
+    /** 批量态下切换某条书签的选中 */
+    data class ToggleSelected(val time: Long) : AllBookmarkScreenAction
+
+    /** 直接设定选中集合（全选 / 全不选） */
+    data class SetSelected(val times: Set<Long>) : AllBookmarkScreenAction
+
+    /** 退出批量态：同时清掉 ViewModel 里的选中 */
+    data object ExitMultiSelect : AllBookmarkScreenAction
+
+    /** 请求删除当前选中项，确认弹窗由 Activity 渲染 */
+    data object RequestDeleteSelected : AllBookmarkScreenAction
 }
 
 /** 时间线列表项：分组头或书签条目 */
@@ -132,6 +151,7 @@ internal fun AllBookmarkScreen(
     query: String,
     onAction: (AllBookmarkScreenAction) -> Unit,
     modifier: Modifier = Modifier,
+    selectedTimes: Set<Long> = emptySet(),
 ) {
     // 筛选条件用三个独立字段而不是一个 data class 装进 rememberSaveable：
     // AllBookmarkFilter 是 internal data class，进程重建时 Bundle 里没有它的 Parcelable/Saver
@@ -143,6 +163,11 @@ internal fun AllBookmarkScreen(
     }
     val normalizedQuery = query.trim()
     val hasConditions = filter.isActive || normalizedQuery.isNotEmpty()
+
+    // 批量管理态。multiSelectMode 独立于"选中数 > 0"：从溢出菜单进入时选中为空，
+    // 也要显示选择态 UI 让用户点选；退出时两者一起清掉。
+    var multiSelectMode by rememberSaveable { mutableStateOf(false) }
+    val isSelectionMode = multiSelectMode || selectedTimes.isNotEmpty()
 
     // 折叠状态分两套：有条件时的折叠不应污染无条件的视图，清空条件后要回到原样
     var collapsedBookKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
@@ -157,6 +182,15 @@ internal fun AllBookmarkScreen(
     val timelineItems = remember(collection.groups, collapsedKeys, hasConditions) {
         buildBookmarkTimelineItems(collection.groups, collapsedKeys.toSet(), hasConditions)
     }
+    // 当前实际展开、因而可被"全选"命中的书签。折叠组里的条目不进这个集合，
+    // 否则用户看到"全选"却把看不见的书签也删了。
+    val visibleTimes = remember(timelineItems) {
+        timelineItems
+            .filterIsInstance<BookmarkTimelineItem.Entry>()
+            .mapTo(linkedSetOf()) { it.bookmark.time }
+    }
+    val allVisibleSelected = visibleTimes.isNotEmpty() &&
+        visibleTimes.all { it in selectedTimes }
 
     var showSearch by rememberSaveable { mutableStateOf(false) }
     var showFilterSheet by rememberSaveable { mutableStateOf(false) }
@@ -186,112 +220,196 @@ internal fun AllBookmarkScreen(
         showFilterSheet = false
     }
 
+    // 批量态下返回键先退出批量态，而不是直接离开页面
+    BackHandler(enabled = isSelectionMode) {
+        multiSelectMode = false
+        onAction(AllBookmarkScreenAction.ExitMultiSelect)
+    }
+
     AppScaffold(
         modifier = modifier,
         topBar = {
             AppPageTopBar(
-                title = stringResource(R.string.all_bookmark),
-                subtitle = stringResource(R.string.all_bookmark_count, bookmarks.size),
-                onBackClick = { onAction(AllBookmarkScreenAction.Back) },
-                actions = {
-                    IconButton(onClick = {
-                        showSearch = !showSearch
-                        if (!showSearch && normalizedQuery.isNotEmpty()) {
-                            onAction(AllBookmarkScreenAction.QueryChanged(""))
-                        }
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = stringResource(R.string.search),
-                        )
+                title = if (isSelectionMode) {
+                    stringResource(R.string.selected, selectedTimes.size)
+                } else {
+                    stringResource(R.string.all_bookmark)
+                },
+                subtitle = if (isSelectionMode) {
+                    stringResource(R.string.select_count, selectedTimes.size, bookmarks.size)
+                } else {
+                    stringResource(R.string.all_bookmark_count, bookmarks.size)
+                },
+                onBackClick = {
+                    if (isSelectionMode) {
+                        multiSelectMode = false
+                        onAction(AllBookmarkScreenAction.ExitMultiSelect)
+                    } else {
+                        onAction(AllBookmarkScreenAction.Back)
                     }
-                    // 筛选按钮：条件生效时图标染色 + 右上角红点
-                    IconButton(onClick = {
-                        closeTransientUi()
-                        showFilterSheet = true
-                    }) {
-                        Box {
+                },
+                backIcon = if (isSelectionMode) {
+                    Icons.Default.Close
+                } else {
+                    Icons.AutoMirrored.Filled.ArrowBack
+                },
+                backContentDescription = stringResource(
+                    if (isSelectionMode) R.string.cancel else R.string.back
+                ),
+                actions = {
+                    if (isSelectionMode) {
+                        // 批量态：全选/全不选 + 删除。搜索、筛选与溢出菜单在此态无意义，整体隐藏
+                        IconButton(onClick = {
+                            onAction(
+                                AllBookmarkScreenAction.SetSelected(
+                                    if (allVisibleSelected) emptySet() else visibleTimes
+                                )
+                            )
+                        }) {
                             Icon(
-                                imageVector = Icons.Default.Tune,
+                                imageVector = Icons.Default.DoneAll,
                                 contentDescription = stringResource(
-                                    if (filter.isActive) R.string.all_bookmark_filter_active
-                                    else R.string.all_bookmark_filter_title
+                                    if (allVisibleSelected) R.string.un_select_all
+                                    else R.string.select_all
                                 ),
-                                tint = if (filter.isActive) {
+                                tint = if (allVisibleSelected) {
                                     bookmarkAccentColor()
                                 } else {
                                     MaterialTheme.colorScheme.onSurface
                                 },
                             )
-                            if (filter.isActive) {
-                                Box(
-                                    Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(top = 5.dp, end = 5.dp)
-                                        .size(5.dp)
-                                        .background(bookmarkAccentColor(), CircleShape)
-                                )
-                            }
                         }
-                    }
-                    Box {
+                        IconButton(
+                            enabled = selectedTimes.isNotEmpty(),
+                            onClick = {
+                                onAction(AllBookmarkScreenAction.RequestDeleteSelected)
+                            },
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteForever,
+                                contentDescription = stringResource(R.string.delete),
+                                tint = if (selectedTimes.isNotEmpty()) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    bookmarkMutedIconTint()
+                                },
+                            )
+                        }
+                    } else {
                         IconButton(onClick = {
-                            closeTransientUi()
-                            showOverflowMenu = true
+                            showSearch = !showSearch
+                            if (!showSearch && normalizedQuery.isNotEmpty()) {
+                                onAction(AllBookmarkScreenAction.QueryChanged(""))
+                            }
                         }) {
                             Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = stringResource(R.string.menu),
+                                imageVector = Icons.Default.Search,
+                                contentDescription = stringResource(R.string.search),
                             )
                         }
-                        DropdownMenu(
-                            modifier = Modifier.eInkGrayscale(),
-                            expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false },
-                        ) {
-                            val allCollapsed = collection.groups.isNotEmpty() &&
-                                collection.groups.all { it.book.key in collapsedKeys }
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        stringResource(
-                                            if (allCollapsed) R.string.expand_all else R.string.collapse_all
+                        // 筛选按钮：条件生效时图标染色 + 右上角红点
+                        IconButton(onClick = {
+                            closeTransientUi()
+                            showFilterSheet = true
+                        }) {
+                            Box {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = stringResource(
+                                        if (filter.isActive) R.string.all_bookmark_filter_active
+                                        else R.string.all_bookmark_filter_title
+                                    ),
+                                    tint = if (filter.isActive) {
+                                        bookmarkAccentColor()
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                )
+                                if (filter.isActive) {
+                                    Box(
+                                        Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(top = 5.dp, end = 5.dp)
+                                            .size(5.dp)
+                                            .background(bookmarkAccentColor(), CircleShape)
+                                    )
+                                }
+                            }
+                        }
+                        Box {
+                            IconButton(onClick = {
+                                closeTransientUi()
+                                showOverflowMenu = true
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = stringResource(R.string.menu),
+                                )
+                            }
+                            DropdownMenu(
+                                modifier = Modifier.eInkGrayscale(),
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.all_bookmark_multi_select)) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.DoneAll,
+                                            contentDescription = null,
                                         )
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = if (allCollapsed) {
-                                            Icons.Default.ExpandLess
-                                        } else {
-                                            Icons.Default.ExpandMore
-                                        },
-                                        contentDescription = null,
-                                    )
-                                },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    updateCollapsed(
-                                        if (allCollapsed) emptyList()
-                                        else collection.groups.map { it.book.key }
-                                    )
-                                },
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.export)) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    onAction(AllBookmarkScreenAction.ExportJson)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.export_md)) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    onAction(AllBookmarkScreenAction.ExportMarkdown)
-                                },
-                            )
+                                    },
+                                    enabled = timelineItems.isNotEmpty(),
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        multiSelectMode = true
+                                    },
+                                )
+                                HorizontalDivider()
+                                val allCollapsed = collection.groups.isNotEmpty() &&
+                                    collection.groups.all { it.book.key in collapsedKeys }
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (allCollapsed) R.string.expand_all else R.string.collapse_all
+                                            )
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (allCollapsed) {
+                                                Icons.Default.ExpandLess
+                                            } else {
+                                                Icons.Default.ExpandMore
+                                            },
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        updateCollapsed(
+                                            if (allCollapsed) emptyList()
+                                            else collection.groups.map { it.book.key }
+                                        )
+                                    },
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.export)) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onAction(AllBookmarkScreenAction.ExportJson)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.export_md)) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onAction(AllBookmarkScreenAction.ExportMarkdown)
+                                    },
+                                )
+                            }
                         }
                     }
                 },
@@ -303,7 +421,7 @@ internal fun AllBookmarkScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            AnimatedVisibility(visible = showSearch) {
+            AnimatedVisibility(visible = showSearch && !isSelectionMode) {
                 AppSearchBar(
                     query = query,
                     onQueryChange = { onAction(AllBookmarkScreenAction.QueryChanged(it)) },
@@ -353,6 +471,8 @@ internal fun AllBookmarkScreen(
 
                             is BookmarkTimelineItem.Entry -> BookmarkTimelineCard(
                                 item = item,
+                                selectionMode = isSelectionMode,
+                                selected = item.bookmark.time in selectedTimes,
                                 onAction = onAction,
                             )
                         }
@@ -462,6 +582,8 @@ private fun bookmarkGroupTitle(
 @Composable
 private fun BookmarkTimelineCard(
     item: BookmarkTimelineItem.Entry,
+    selectionMode: Boolean,
+    selected: Boolean,
     onAction: (AllBookmarkScreenAction) -> Unit,
 ) {
     val bookmark = item.bookmark
@@ -474,13 +596,30 @@ private fun BookmarkTimelineCard(
             .fillMaxWidth()
             .height(IntrinsicSize.Min),
     ) {
-        BookmarkTimelineRail(
-            firstInGroup = item.firstInGroup,
-            lastInGroup = item.lastInGroup,
-            modifier = Modifier
-                .width(30.dp)
-                .fillMaxHeight(),
-        )
+        if (selectionMode) {
+            // 批量态下导轨换成勾选框：位置、宽度与导轨一致，列表不会左右跳动。
+            // onCheckedChange 传 null —— 勾选框只做视觉呈现，命中区域是整张卡片。
+            Box(
+                modifier = Modifier
+                    .width(30.dp)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = null,
+                    modifier = Modifier.size(19.dp),
+                )
+            }
+        } else {
+            BookmarkTimelineRail(
+                firstInGroup = item.firstInGroup,
+                lastInGroup = item.lastInGroup,
+                modifier = Modifier
+                    .width(30.dp)
+                    .fillMaxHeight(),
+            )
+        }
         Surface(
             modifier = Modifier
                 .weight(1f)
@@ -488,17 +627,26 @@ private fun BookmarkTimelineCard(
                 .clip(cardShape)
                 .combinedClickable(
                     onClick = {
-                        onAction(AllBookmarkScreenAction.Open(bookmark, item.position))
+                        if (selectionMode) {
+                            onAction(AllBookmarkScreenAction.ToggleSelected(bookmark.time))
+                        } else {
+                            onAction(AllBookmarkScreenAction.Open(bookmark, item.position))
+                        }
                     },
                     onLongClickLabel = stringResource(R.string.edit),
                     onLongClick = {
-                        onAction(AllBookmarkScreenAction.Edit(bookmark, item.position))
+                        // 批量态下长按不再弹编辑框：此时长按的唯一语义是选中/取消选中
+                        if (selectionMode) {
+                            onAction(AllBookmarkScreenAction.ToggleSelected(bookmark.time))
+                        } else {
+                            onAction(AllBookmarkScreenAction.Edit(bookmark, item.position))
+                        }
                     },
                 ),
             shape = cardShape,
             color = bookmarkCardContainerColor(),
             contentColor = contentColor,
-            border = bookmarkCardBorder(),
+            border = bookmarkCardBorder(selected),
             shadowElevation = 0.dp,
         ) {
             Column(

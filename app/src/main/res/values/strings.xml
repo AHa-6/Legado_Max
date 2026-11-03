@@ -2752,6 +2752,8 @@ Night: %5$s / %6$s / %7$s / %8$s</string>
     <string name="all_bookmark_collapsed">Collapsed</string>
     <string name="all_bookmark_empty">No bookmarks yet</string>
     <string name="all_bookmark_delete_confirm">Delete this bookmark?</string>
+    <string name="all_bookmark_multi_select">Batch management</string>
+    <string name="all_bookmark_batch_delete_confirm">Delete the %1$d selected bookmarks? This cannot be undone.</string>
     <string name="bookmark_highlight_title">Highlight</string>
     <string name="bookmark_highlight_style">Highlight style</string>
     <string name="bookmark_highlight_color">Highlight color</string>

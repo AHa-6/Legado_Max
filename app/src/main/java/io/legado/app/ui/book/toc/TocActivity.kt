@@ -129,6 +129,8 @@ class TocActivity : VMBaseActivity<ActivityChapterListBinding, TocViewModel>(),
             AppConfig.tocCollapseVolumeName
         menu.findItem(R.id.menu_show_full_chapter_name)?.isChecked =
             AppConfig.tocShowFullChapterName
+        // 书签栏折叠状态可能已被组头点击改变，每次展开菜单时刷新文案
+        menu.findItem(R.id.menu_bookmark_toggle_group)?.let { upBookmarkGroupMenuTitle(it) }
         menu.findItem(R.id.menu_split_long_chapter)?.isChecked =
             viewModel.bookData.value?.getSplitLongChapter() == true
         return super.onMenuOpened(featureId, menu)
@@ -203,9 +205,25 @@ class TocActivity : VMBaseActivity<ActivityChapterListBinding, TocViewModel>(),
                 viewModel.startBookmarkSearch(searchView?.query?.toString())
             }
 
+            R.id.menu_bookmark_toggle_group -> {
+                viewModel.toggleBookmarkGroup()
+                upBookmarkGroupMenuTitle(item)
+            }
+
             R.id.menu_log -> showDialogFragment<AppLogDialog>()
         }
         return super.onCompatOptionsItemSelected(item)
+    }
+
+    /** 已折叠则提示「全部展开」，反之提示「全部折叠」 */
+    private fun upBookmarkGroupMenuTitle(item: MenuItem) {
+        item.setTitle(
+            if (viewModel.isBookmarkAllCollapsed()) {
+                R.string.expand_all
+            } else {
+                R.string.collapse_all
+            }
+        )
     }
 
     override fun onTocRegexDialogResult(tocRegex: String) {

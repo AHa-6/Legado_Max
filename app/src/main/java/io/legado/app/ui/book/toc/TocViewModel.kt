@@ -94,6 +94,13 @@ class TocViewModel(application: Application) : BaseViewModel(application) {
         bookMarkCallBack?.upBookmark(newText)
     }
 
+    fun toggleBookmarkGroup() {
+        bookMarkCallBack?.toggleBookmarkGroup()
+    }
+
+    fun isBookmarkAllCollapsed(): Boolean =
+        bookMarkCallBack?.isBookmarkAllCollapsed() ?: false
+
     fun upChapterListAdapter() {
         chapterListCallBack?.upAdapter()
     }
@@ -150,5 +157,11 @@ class TocViewModel(application: Application) : BaseViewModel(application) {
 
     interface BookmarkCallBack {
         fun upBookmark(searchKey: String?)
+
+        /** 切换书签栏的章节分组折叠状态（全部展开 <-> 全部折叠） */
+        fun toggleBookmarkGroup()
+
+        /** 是否已全部折叠，用于菜单项在「全部展开 / 全部折叠」之间切文案 */
+        fun isBookmarkAllCollapsed(): Boolean
     }
 }
