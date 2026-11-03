@@ -4,6 +4,7 @@ package io.legado.app.ui.book.read.page.entities
 import androidx.annotation.Keep
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.help.book.BookContent
 import io.legado.app.model.webBook.LazyContentManager
@@ -41,6 +42,16 @@ data class TextChapter(
     var useLazyLoading: Boolean = false
 
     val layoutChannel get() = layout!!.channel
+
+    /**
+     * 本章覆盖到的书签记录（原始实体，含 time/content/样式字段）。
+     *
+     * 供阅读页做点击命中测试用，数据由排版层在 IO 线程上查好（见
+     * TextChapterLayout.resolveChapterBookmarks），这里只是转发，不触发查库。
+     * 排版还没建立或还没跑完时返回空列表。
+     */
+    val bookmarkHighlights: List<Bookmark>
+        get() = layout?.chapterBookmarks ?: emptyList()
 
     fun appendContent(newContents: List<String>) {
         layout?.appendContent(newContents)

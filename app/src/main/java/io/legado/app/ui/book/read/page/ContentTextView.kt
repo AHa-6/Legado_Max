@@ -26,6 +26,7 @@ import io.legado.app.ui.book.read.page.entities.column.ImageColumn
 import io.legado.app.ui.book.read.page.entities.column.ReviewColumn
 import io.legado.app.ui.book.read.page.entities.column.TextBaseColumn
 import io.legado.app.ui.book.read.page.entities.column.TextColumn
+import io.legado.app.ui.book.read.page.entities.column.textLengthInChapter
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
 import io.legado.app.ui.book.read.page.provider.TextPageFactory
 import io.legado.app.ui.widget.dialog.PhotoDialog
@@ -299,6 +300,75 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     }
 
     /**
+     * 单击「带备注」标识。
+     *
+     * 不复用 [touch]：标识热区（18dp）会超出行盒下沿，而 [TextLine.isTouch] 要求
+     * `y < lineBottom`，走 touch 会判不到。这里自己遍历行，用标识自带的行内热区判定。
+     *
+     * 坐标换算：热区存的是**行内坐标**（y 以行盒顶为 0，见 BookmarkNoteMark 类注释），
+     * 而入参 y 是视图坐标，所以要减掉 `lineTop + relativeOffset`；x 两边都是页面绝对坐标，
+     * 直接比。分页偏移的处理与 [touch] 一致——滚动模式下当前页之外还有相对页要查。
+     *
+     * @return true 表示命中并已交给宿主处理，本次点击不该再翻页
+     */
+    private fun clickNoteMark(x: Float, y: Float): Boolean {
+        for (relativePos in 0..2) {
+            val relativeOffset = relativeOffset(relativePos)
+            if (relativePos > 0) {
+                // 滚动翻页才有相对页；翻页模式下后面的页不在屏幕上
+                if (!callBack.isScroll) return false
+                if (relativeOffset >= ChapterProvider.visibleHeight) return false
+            }
+            val textPage = relativePage(relativePos)
+            textPage.lines.forEach { textLine ->
+                val mark = textLine.noteMark ?: return@forEach
+                if (!mark.isTouch(x, y - textLine.lineTop - relativeOffset)) return@forEach
+                // time 是主键，直接从本章已解析的书签里取回整条记录（内存态，不查库）。
+                // 取不到说明排版后书签被删了而页面还没重排：按未命中处理，让点击照常翻页
+                val bookmark = textPage.getTextChapter().bookmarkHighlights
+                    .firstOrNull { it.time == mark.time } ?: return false
+                // 还原成视图坐标再交给宿主，口径见 CallBack.onClickBookmark 注释
+                callBack.onClickBookmark(
+                    bookmark,
+                    x + callBack.imgBgPaddingStart,
+                    y + callBack.headerHeight,
+                )
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * 单击已有划线：命中则唤出该条书签的操作菜单（看/改备注、改样式颜色、删除）。
+     *
+     * 命中的列换成「章节绝对偏移」再问书签区间是否覆盖——与排版侧
+     * [io.legado.app.ui.book.read.page.provider.TextChapterLayout] 的高亮渲染同源，
+     * 所以「看得见色块就点得到」不会错位。偏移换算用 [textLengthInChapter]，
+     * 行内图片占的那个字符也计入，否则图片之后的划线会点不中。
+     *
+     * @return 命中的书签，null 表示这一点上没有划线
+     */
+    private fun highlightAt(
+        textPage: TextPage,
+        textLine: TextLine,
+        column: BaseColumn,
+    ): Bookmark? {
+        val highlights = textPage.getTextChapter().bookmarkHighlights
+        if (highlights.isEmpty()) return null
+        val columnIndex = textLine.columns.indexOf(column)
+        if (columnIndex < 0) return null
+        var offset = 0
+        for (index in 0 until columnIndex) {
+            offset += textLine.columns[index].textLengthInChapter()
+        }
+        val position = textLine.chapterPosition + offset
+        return highlights.firstOrNull {
+            it.containsChapterPosition(textPage.chapterIndex, position)
+        }
+    }
+
+    /**
      * 单击
      * @return true:已处理, false:未处理
      */
@@ -312,6 +382,9 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         } else {
             false
         }
+        // 标识优先于文字命中：它画在行末字符的右边缘上，两者热区重叠，
+        // 先判标识才能保证「点了三角出备注」而不是「点了字翻页」
+        if (clickNoteMark(x, y)) return true
         var handled = false
         touch(x, y) { _, textPos, textPage, textLine, column ->
             when (column) {
@@ -373,6 +446,31 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                         activity?.startActivity<OpenUrlConfirmActivity> {
                             putExtra("uri", it)
                         }
+                        handled = true
+                    }
+                    // 没有链接的 HTML 列仍然可能是某条划线的一部分，按划线处理
+                    if (!handled) {
+                        highlightAt(textPage, textLine, column)?.let {
+                            callBack.onClickBookmark(
+                                it,
+                                x + callBack.imgBgPaddingStart,
+                                y + callBack.headerHeight,
+                            )
+                            handled = true
+                        }
+                    }
+                }
+
+                is TextBaseColumn -> {
+                    // 点击已有划线：唤出这条书签的操作菜单（备注、样式颜色、删除）。
+                    // 只认文字列——图片/按钮列有各自的点击语义（预览、跳转），
+                    // 不该被划线菜单抢走
+                    highlightAt(textPage, textLine, column)?.let {
+                        callBack.onClickBookmark(
+                            it,
+                            x + callBack.imgBgPaddingStart,
+                            y + callBack.headerHeight,
+                        )
                         handled = true
                     }
                 }
@@ -1238,5 +1336,21 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         fun onLongScreenshotTouchEvent(event: MotionEvent): Boolean
         fun oldClickImg(src: String): Boolean
         fun clickImg(click: String, src: String)
+
+        /**
+         * 点击了阅读页上的书签（已有划线，或划线末端的备注标识）。
+         *
+         * 宿主负责弹出该条书签的操作界面。实现方必须保证不触发查库：
+         * 传进来的 [bookmark] 是排版期已经解析好的内存对象，
+         * 排版后书签被删的情况调用方已过滤过。
+         *
+         * @param x 点击位置 X（**视图坐标**，未减 imgBgPaddingStart，宿主拿去锚定菜单）
+         * @param y 点击位置 Y（**视图坐标**，未减 headerHeight）
+         *
+         * 坐标刻意在这里就还原成视图坐标：菜单锚点与 [upSelectedStart] 的口径一致
+         * （那里也是 `x + imgBgPaddingStart` / `y + headerHeight`），宿主不需要知道
+         * 这两个内边距的存在。
+         */
+        fun onClickBookmark(bookmark: Bookmark, x: Float, y: Float)
     }
 }

@@ -160,7 +160,7 @@ internal fun BookmarkDialogContent(
 }
 
 @Composable
-private fun BookmarkDialogSectionLabel(text: String) {
+internal fun BookmarkDialogSectionLabel(text: String) {
     Text(
         text = text,
         modifier = Modifier.padding(bottom = 8.dp),
@@ -178,7 +178,7 @@ private fun BookmarkDialogSectionLabel(text: String) {
  * bgColor / underlineMode（见 TextChapterLayout 的书签高亮分支）。
  */
 @Composable
-private fun BookmarkStyleRow(style: Int, onStyleSelected: (Int) -> Unit) {
+internal fun BookmarkStyleRow(style: Int, onStyleSelected: (Int) -> Unit) {
     val accent = bookmarkAccentColor()
     val options = listOf(
         Bookmark.STYLE_BACKGROUND to R.string.bookmark_style_background,
@@ -224,7 +224,7 @@ private fun BookmarkStyleRow(style: Int, onStyleSelected: (Int) -> Unit) {
 
 /** 高亮颜色：固定给 [Bookmark.HIGHLIGHT_COLORS] 全量五色，必选中其一 */
 @Composable
-private fun BookmarkDialogColorRow(color: Int, onColorSelected: (Int) -> Unit) {
+internal fun BookmarkDialogColorRow(color: Int, onColorSelected: (Int) -> Unit) {
     val accent = bookmarkAccentColor()
     Row(
         modifier = Modifier

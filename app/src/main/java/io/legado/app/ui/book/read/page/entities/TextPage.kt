@@ -15,6 +15,7 @@ import io.legado.app.ui.book.read.page.ContentTextView
 import io.legado.app.ui.book.read.page.entities.TextChapter.Companion.emptyTextChapter
 import io.legado.app.ui.book.read.page.entities.column.TextBaseColumn
 import io.legado.app.ui.book.read.page.entities.column.TextColumn
+import io.legado.app.ui.book.read.page.entities.column.textLengthInChapter
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
 import io.legado.app.utils.canvasrecorder.CanvasRecorderFactory
 import io.legado.app.utils.canvasrecorder.recordIfNeeded
@@ -281,10 +282,11 @@ data class TextPage(
         }
         val columns = textLines[maxIndex].columns
         for (index in 0 until columnIndex) {
-            val column = columns[index]
-            if (column is TextBaseColumn) {
-                length += column.charData.length
-            }
+            // 用共享口径数字符宽度：行内图片/段评在 text 里也各占一个占位字符，
+            // 只数 TextBaseColumn 会让每张图片之后的所有偏移都少一格，
+            // 写进书签的 chapterPos 与排版层的 chapterPosition 就对不上了
+            // （渲染侧 mergeBookmarkStyles、备注标识定位都以 chapterPosition 为准）。
+            length += columns[index].textLengthInChapter()
         }
         return length
     }

@@ -81,6 +81,18 @@ data class TextLine(
     var isLeftLine = true
 
     /**
+     * 本行挂的「划线带备注」标识，没有备注时为 null。
+     *
+     * 一条高亮只在它**真正结束**的那一行带标识（见 BookmarkNoteMark 的类注释），
+     * 因此本字段是单个而不是列表：同一行上多个备注各占一个三角时，
+     * 三角会挤在一起谁也点不准，反而更糟；真出现时取最后一个，
+     * 备注内容仍可从「所有书签」页访问。
+     *
+     * 由 TextChapterLayout 在排版期写好；绘制与点击命中共用这一份坐标。
+     */
+    var noteMark: BookmarkNoteMark? = null
+
+    /**
      * 本行实际使用的文字画笔：宽度/高度/字体度量按它量，绘制也按它画，两者必须同源。
      *
      * 由 setTypeText 在创建行时写入（标题分段后的次行放缩放后的画笔）。
@@ -244,11 +256,41 @@ data class TextLine(
 
         drawStyledUnderlines(canvas)
 
+        // 「划线带备注」标识：画在下划线之后，避免被下划线压住；
+        // 坐标由排版期算好（BookmarkNoteMark），这里只负责落笔
+        noteMark?.let { drawNoteMark(canvas, it) }
+
         val underlineMode = ReadBookConfig.underlineMode
         if (underlineMode == 0) return
         if (!isImage && !isHtml && ReadBook.book?.isImage != true) {
             drawUnderline(canvas, underlineMode)
         }
+    }
+
+    /**
+     * 绘制行末的备注标识：一个右上角折下的实心三角，贴着划线末字符的右边缘。
+     *
+     * 选折角三角而不是小圆点/图标：
+     * - 圆点与高亮色块在 5dp 尺度下几乎无法区分（尤其 STYLE_BACKGROUND 的半透明底色）；
+     * - 位图图标要过 PaintPool + Bitmap 解码，行绘制是每帧都要跑的，不划算。
+     * 三角只画三条线，且尖角朝向划线内部，视觉上是"这一行末尾还挂着东西"。
+     *
+     * 颜色用书签自身的高亮色而不是正文色：标识必须与它所属的划线同色，
+     * 否则一行上有两条不同色划线时看不出标识属于哪条。
+     */
+    private fun drawNoteMark(canvas: Canvas, mark: BookmarkNoteMark) {
+        val paint = PaintPool.obtain()
+        paint.style = Paint.Style.FILL
+        paint.color = mark.color
+        paint.isAntiAlias = true
+        val path = Path()
+        // 行内坐标系：y 以行盒顶部为 0，与 drawBgColorSegment 的口径一致
+        path.moveTo(mark.tipX - mark.size, mark.top)
+        path.lineTo(mark.tipX, mark.top)
+        path.lineTo(mark.tipX, mark.top + mark.size)
+        path.close()
+        canvas.drawPath(path, paint)
+        PaintPool.recycle(paint)
     }
 
     /**

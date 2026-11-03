@@ -31,6 +31,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.ImageProvider
 import io.legado.app.model.ParagraphBubbleRenderer
 import io.legado.app.model.ReadBook
+import io.legado.app.ui.book.read.page.entities.BookmarkNoteMark
 import io.legado.app.ui.book.read.page.entities.TextChapter
 import io.legado.app.ui.book.read.page.entities.TextLine
 import io.legado.app.ui.book.read.page.entities.TextPage
@@ -79,6 +80,7 @@ import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
 import io.legado.app.ui.book.read.page.entities.column.BaseColumn
 import io.legado.app.ui.book.read.page.entities.column.TextBaseColumn
+import io.legado.app.ui.book.read.page.entities.column.textLengthInChapter
 import io.legado.app.ui.book.read.config.highlight.HighlightRule
 import io.legado.app.ui.book.read.config.highlight.HighlightRuleRepository
 import io.legado.app.ui.book.read.config.highlight.HighlightRuleStyle
@@ -189,21 +191,85 @@ class TextChapterLayout(
     private var pendingTextPage = TextPage()
 
     /**
-     * 覆盖到本章的书签文字高亮，排版期只查一次库。
+     * 覆盖到本章的书签原始记录，**只在排版期查库一次**。
      *
      * 走 BookmarkDao.getHighlightsByChapter 在 SQL 里按章过滤：一本书的书签可能上千条，
      * 全查出来再在内存里筛会拖慢每次排版（排版是同步阻塞在 IO 线程上的）。
      * 查询失败按"没有高亮"处理，不能让书签表的异常把整章排版带崩。
+     *
+     * 之所以不用 `by lazy`：命中测试（点击划线唤出菜单、点击备注标识看备注）跑在 UI 线程上，
+     * lazy 的首次求值会把那次查库拖到主线程。改成普通字段 + 排版期显式求值，
+     * UI 侧经 [resolvedBookmarks] 只能读到已解析好的结果。
      */
-    private val chapterHighlights: List<CompiledBookmarkHighlight> by lazy {
-        kotlin.runCatching {
+    private var resolvedBookmarks: List<Bookmark> = emptyList()
+
+    /**
+     * 本章已解析的书签记录，供 UI 线程做命中测试。
+     *
+     * 排版未跑完时返回空列表——此时页面本身也还不存在，正常时序下不会走到。
+     * 刻意不提供"未解析就去查库"的兜底：主线程查库换一次点击命中不值得。
+     */
+    val chapterBookmarks: List<Bookmark> get() = resolvedBookmarks
+
+    /** 本章要渲染的高亮区间，由 [resolvedBookmarks] 编译而来（同一份数据，不重复查库） */
+    private var chapterHighlights: List<CompiledBookmarkHighlight> = emptyList()
+
+    /**
+     * 本章要挂「带备注」标识的锚点，同样由 [resolvedBookmarks] 派生。
+     *
+     * 排版循环每行都要读它，所以求值一次缓存下来，不能在 [collectNoteMarks] 里现算——
+     * 一章几百行，每行都过滤一遍书签列表是白扔的开销。
+     */
+    private var noteMarkAnchors: List<NoteMarkAnchor> = emptyList()
+
+    /**
+     * 求值本章书签：查一次库，同时算出渲染用的区间列表和标识锚点。
+     *
+     * 在 init 的 IO 协程体最前面调用一次，此后 [chapterBookmarks]、
+     * [chapterHighlights] 与 [noteMarkAnchors] 都是纯内存读取。
+     */
+    private fun resolveChapterBookmarks() {
+        resolvedBookmarks = kotlin.runCatching {
             appDb.bookmarkDao.getHighlightsByChapter(book.name, book.author, bookChapter.index)
-                .mapNotNull { it.toCompiledHighlight(bookChapter.index) }
         }.getOrElse {
             AppLog.put("读取书签高亮失败", it)
             emptyList()
         }
+        chapterHighlights = resolvedBookmarks.mapNotNull { it.toCompiledHighlight(bookChapter.index) }
+        noteMarkAnchors = resolveNoteMarkAnchors()
     }
+
+    /**
+     * 挑出「本章该出标识」的书签，转成 [NoteMarkAnchor]。
+     *
+     * 三个过滤条件缺一不可：
+     * - `isTextHighlight`：位置书签没有划线，末端也就没有"末端"可挂；
+     * - `content` 非空：备注为空时不该出标识，否则纯高亮的页面右侧会挂满点不到备注的三角；
+     * - `endChapterIndex == 本章`：**只在末章出**。跨章高亮在非末章调
+     *   [Bookmark.highlightEndIn] 拿到的是 [Int.MAX_VALUE]（表示"一直到章尾"），
+     *   这个值会让 [collectNoteMarks] 的行区间判定对每一行都成立，
+     *   整章每行右侧都会画一个三角。末章过滤是唯一能把 [Int.MAX_VALUE] 挡在
+     *   进入排版循环之前的地方，所以必须在这里做，不能指望下游。
+     *
+     * `end <= 0` 挡的是脏数据：终点为 0 的高亮没有可见末端，画出来会贴在章首。
+     */
+    private fun resolveNoteMarkAnchors(): List<NoteMarkAnchor> {
+        val targetChapter = bookChapter.index
+        return resolvedBookmarks.mapNotNull { bookmark ->
+            if (!bookmark.isTextHighlight) return@mapNotNull null
+            if (bookmark.content.isBlank()) return@mapNotNull null
+            if (bookmark.endChapterIndex != targetChapter) return@mapNotNull null
+            val end = bookmark.highlightEndIn(targetChapter)
+            if (end <= 0) return@mapNotNull null
+            NoteMarkAnchor(
+                time = bookmark.time,
+                color = bookmark.highlightColor,
+                end = end,
+            )
+        }
+    }
+
+
 
     private val bookChapter inline get() = textChapter.chapter
     private val displayTitle inline get() = textChapter.title
@@ -228,6 +294,12 @@ class TextChapterLayout(
             start = CoroutineStart.LAZY,
             executeContext = IO,
         ) {
+            // 书签求值必须在协程体内（IO 线程）：TextChapterLayout 的构造点
+            // ChapterProvider.getTextChapterAsync 可能在主线程被调用，放在 init 里
+            // 会把那次查库拖到主线程。原来用 by lazy 时首次求值发生在
+            // mergeBookmarkStyles（已在 IO 上），这里显式提前到排版最前面，
+            // 保证正文与标题两条路径都能读到。
+            resolveChapterBookmarks()
             launch {
                 val bookSource = book.getBookSource() ?: return@launch
                 BookHelp.saveImages(bookSource, book, bookChapter, bookContent.toString())
@@ -1679,6 +1751,104 @@ class TextChapterLayout(
     }
 
     /**
+     * 带备注的书签 → 本章的标识锚点区间。
+     *
+     * 与 [toCompiledHighlight] 分开是有意的：渲染只要区间和样式，
+     * 而标识除区间外还要 [Bookmark.time]（点击据此定位记录）和原始颜色（标识要与划线同色，
+     * 而渲染用的样式已经把背景压成半透明、下划线则完全不含背景色）。
+     * 所以标识这条链自己带书签本体，不从 [CompiledBookmarkHighlight] 反推。
+     *
+     * 只保留 `content` 非空的高亮：备注为空时末端不该出现标识，
+     * 否则纯高亮的页面右侧会挂满点不到任何备注的三角。
+     */
+    private class NoteMarkAnchor(
+        val time: Long,
+        val color: Int,
+        val end: Int,
+    )
+
+    /**
+     * 从高亮列表里挑出本行该挂的标识。
+     *
+     * 调用点在 `upTopBottom` **之后**：`TextLine.height` 是 `lineBottom - lineTop`，
+     * 两者都由 `upTopBottom` 设置，之前算出来的行盒高度是 0，标识会贴到行顶。
+     *
+     * 一行只挂一个标识（[TextLine.noteMark] 是单值字段）：同一行有两条带备注的划线时
+     * 取结束位置更靠后的那条——它是"这一行最后结束的高亮"，视觉上更接近行尾，
+     * 也不会因为多条挤在一起谁都点不准。前一条的备注仍可从文字高亮本身点开。
+     */
+    private fun collectNoteMarks(textLine: TextLine, anchors: List<NoteMarkAnchor>) {
+        if (anchors.isEmpty()) return
+        val lineStartPosition = textLine.chapterPosition
+        // 段末行要额外算上换行符占的那个章节偏移：calcTextLinePosition 对
+        // isParagraphEnd 的行做了 +1，这个偏移不属于任何一行的字符区间。
+        // 用户选中整段时书签的 end 正好落在它上面，不补这一格整条标识都会丢
+        // （下一行的 chapterPosition 已跨过它，end > lineStart 也不再成立）。
+        val lineEndPosition = lineStartPosition + textLine.charSize +
+            if (textLine.isParagraphEnd) 1 else 0
+        var best: NoteMarkAnchor? = null
+        for (index in anchors.indices) {
+            val anchor = anchors[index]
+            if (anchor.end <= lineStartPosition || anchor.end > lineEndPosition) continue
+            // 局部 val 中转一下：best 在循环里被赋值，直接判空拿不到智能转换
+            val current = best
+            if (current == null || anchor.end > current.end) best = anchor
+        }
+        val anchor = best ?: return
+        // offsetInLine 可能比 charSize 大 1（上面补的换行格），此时列累加找不到终点，
+        // noteMarkTipX 会退到行末——正是段末行该有的位置
+        val tipX = noteMarkTipX(textLine, anchor.end - lineStartPosition) ?: return
+        val size = BookmarkNoteMark.SIZE_DP.dpToPx()
+        // 贴着行盒下沿（与 NG 的 lineBottom - markerSize 等价，这里是行内坐标系）
+        val top = (textLine.height - size).coerceAtLeast(0f)
+        val hitHalf = (BookmarkNoteMark.MIN_HIT_SIZE_DP.dpToPx() / 2f)
+            .coerceAtLeast(size / 2f)
+        val centerX = tipX - size / 2f
+        val centerY = top + size / 2f
+        textLine.noteMark = BookmarkNoteMark(
+            time = anchor.time,
+            color = anchor.color,
+            tipX = tipX,
+            top = top,
+            size = size,
+            hitLeft = centerX - hitHalf,
+            hitTop = centerY - hitHalf,
+            hitRight = centerX + hitHalf,
+            hitBottom = centerY + hitHalf,
+        )
+    }
+
+    /**
+     * 算出标识尖角应有的 x（页面绝对坐标）。
+     *
+     * 与 NG 的 `textHighlightNoteEndpointX` 同一算法：沿本行列累加章节偏移，
+     * 找出高亮终点落在哪一列里，取那一列的 `end` 作为锚点。
+     *
+     * 累加用的 [textLengthInChapter] 与写入侧 `TextPage.getPosByLineColumn` 共用同一份实现，
+     * 保证「章节坐标 → 页面 x」和「选区 → 章节坐标」两个方向可逆：
+     * 行内图片在 `line.text` 里各占一个占位字符，只数文字列会让图片之后的标识整体左偏。
+     *
+     * @param offsetInLine 高亮终点相对本行行首的字符偏移（≥ 1，因为终点是左闭右开边界）
+     *
+     * 找不到时返回 null（终点落在图片列、或列区间算不准），此时宁可不画标识——
+     * 画错位置比不画更糟，会出现"标识指向别的字"的错觉。
+     */
+    private fun noteMarkTipX(textLine: TextLine, offsetInLine: Int): Float? {
+        if (offsetInLine <= 0) return null
+        var position = 0
+        textLine.columns.forEach { column ->
+            val length = column.textLengthInChapter()
+            val columnEnd = position + length
+            if (length > 0 && offsetInLine <= columnEnd) {
+                return column.end
+            }
+            position = columnEnd
+        }
+        // 本行的列里找不到对应终点：退到行末，保证标识至少贴着这一行
+        return textLine.lineEnd.takeIf { it > 0f }
+    }
+
+    /**
      * 一条书签高亮在**某一章**内的渲染区间（章节绝对偏移，左闭右开）与样式快照。
      *
      * 跨章书签会在它覆盖的每一章各生成一条：首章从 `chapterPos` 起到章尾，
@@ -2054,6 +2224,12 @@ class TextChapterLayout(
             stringBuilder.append(lineText)
             // 上留白把整行下移，下留白加在行后：命中行与上下行之间留出空白，行盒本身高度不变
             textLine.upTopBottom(durY + highlightLineTop, textHeight, fontMetrics)
+            // 备注标识必须在这里算：height = lineBottom - lineTop，全部由上一行的
+            // upTopBottom 设置，之前算出来的行盒高度还是 0，标识会贴到行顶。
+            // 也必须早于 addLine：addLine 之后这一行已经进了页，改它要额外触发重绘。
+            if (noteMarkAnchors.isNotEmpty()) {
+                collectNoteMarks(textLine, noteMarkAnchors)
+            }
             textLine.useTitleLineSpacing = useTitleLineSpacing
             val textPage = pendingTextPage
             textPage.addLine(textLine)

@@ -28,6 +28,7 @@ import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.data.appDb
+import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
@@ -978,10 +979,24 @@ class ReadBookActivity :
     /**
      * 取消文字选择
      */
+    /**
+     * 撤选区时不要关掉文本菜单。
+     *
+     * 划线操作全程在菜单里进行，而「创建划线」与「点已有划线」两条路都要先撤掉选区
+     * （选择层那抹蓝色会盖住真正的划线颜色）。撤选区的调用链是
+     * `ReadView.cancelSelect` → `PageView` → `ContentTextView.cancelSelect`
+     * → [onCancelSelect]，最后一步默认会 dismiss 菜单——正是我们要保住的那个窗口。
+     *
+     * 所以在这两步之间临时把开关打开，调用完立刻关掉，避免影响正常的取消选择。
+     */
+    private var keepTextActionMenuOnCancelSelect = false
+
     override fun onCancelSelect() = binding.run {
         cursorLeft.invisible()
         cursorRight.invisible()
-        textActionMenu.dismiss()
+        if (!keepTextActionMenuOnCancelSelect) {
+            textActionMenu.dismiss()
+        }
     }
 
     override fun onLongScreenshotTouchEvent(event: MotionEvent): Boolean = binding.readView.onTouchEvent(event)
@@ -1029,15 +1044,9 @@ class ReadBookActivity :
                 else -> speak(binding.readView.getSelectText())
             }
 
-            R.id.menu_bookmark -> binding.readView.curPage.let {
-                val bookmark = it.createBookmark()
-                if (bookmark == null) {
-                    toastOnUi(R.string.create_bookmark_error)
-                } else {
-                    showDialogFragment(BookmarkDialog(bookmark))
-                }
-                return true
-            }
+            // R.id.menu_bookmark 不在这里处理：创建划线已经由 TextActionMenu 接管
+            // （onEntryClick 直接调 onTextHighlightCreate 并原地转成划线面板），
+            // 菜单不会再把这个 itemId 传下来。
 
             R.id.menu_replace -> {
                 val scopes = arrayListOf<String>()
@@ -1298,6 +1307,116 @@ class ReadBookActivity :
     override fun onMenuActionFinally() = binding.run {
         textActionMenu.dismiss()
         readView.cancelSelect()
+    }
+
+    // ─────────────── 划线操作（菜单内完成，不弹窗） ───────────────
+    //
+    // 四个回调都只做两件事：落库、让当前章重排版。
+    // 重排版是必须的——Max 的高亮样式是在**排版期**并进字符样式数组的
+    // （TextChapterLayout.mergeBookmarkStyles），已排好的页面不会自己变色，
+    // 与 BookmarkDialog 保存后走的是同一条通道（UP_CONFIG 的 5）。
+
+    /**
+     * 点击已有划线或划线末端的备注标识：原地把菜单换成划线操作面板。
+     *
+     * @param x 点击位置 X（视图坐标，与 [showTextActionMenu] 的锚点同口径）
+     * @param y 点击位置 Y（视图坐标）
+     */
+    override fun onClickBookmark(bookmark: Bookmark, x: Float, y: Float) = binding.run {
+        // 点划线时不该停留在文字选择态：选区那层蓝色高亮会盖住面板里刚改的颜色
+        cancelTextSelectionForHighlight()
+        val navigationBarHeight =
+            if (!ReadBookConfig.hideNavigationBar && navigationBarGravity == Gravity.BOTTOM) {
+                binding.navigationBar.height
+            } else {
+                0
+            }
+        textActionMenu.showTextHighlight(
+            binding.textMenuPosition,
+            binding.root.height + navigationBarHeight,
+            x.toInt(),
+            y.toInt(),
+            bookmark,
+        )
+    }
+
+    /**
+     * 菜单内点「书签」：把当前选区存成一条文字高亮。
+     *
+     * 挂起函数，[TextActionMenu] 在自己的协程里调用；返回后菜单不关，
+     * 直接转成划线面板，用户接着改备注 / 样式 / 颜色。
+     *
+     * @return null 表示没有有效选区（脏区间退化成位置书签的情况由
+     *   [io.legado.app.ui.book.read.page.ContentTextView.createBookmark] 决定）
+     */
+    override suspend fun onTextHighlightCreate(): Bookmark? {
+        val bookmark = binding.readView.curPage.createBookmark() ?: return null
+        withContext(IO) {
+            appDb.bookmarkDao.insert(bookmark)
+        }
+        // 选区已经变成划线了，把蓝色选择层撤掉，新划线的颜色才看得见
+        cancelTextSelectionForHighlight()
+        notifyHighlightChanged()
+        return bookmark
+    }
+
+    /** 划线被改（备注 / 样式 / 颜色）。菜单可能还开着，这里不要 dismiss */
+    override fun onTextHighlightUpdate(bookmark: Bookmark) {
+        lifecycleScope.launch {
+            withContext(IO) {
+                appDb.bookmarkDao.insert(bookmark)
+            }
+            notifyHighlightChanged()
+        }
+    }
+
+    /** 划线被删。菜单会自行关闭，这里只管落库与重排版 */
+    override fun onTextHighlightDelete(bookmark: Bookmark) {
+        lifecycleScope.launch {
+            withContext(IO) {
+                appDb.bookmarkDao.delete(bookmark)
+            }
+            notifyHighlightChanged()
+        }
+    }
+
+    /**
+     * 取消文字选择并收起两个端点手柄，但**不关菜单**。
+     *
+     * 与 [onCancelSelect] 的差别就是少一次 dismiss：划线面板要留在原地继续操作，
+     * 而选择层必须让位给真正的划线颜色。
+     */
+    private fun cancelTextSelectionForHighlight() {
+        val view = binding.readView
+        if (!view.isTextSelected) return
+        view.dismissSelectionMagnifier()
+        // 抑制开关的理由见 keepTextActionMenuOnCancelSelect 注释：
+        // cancelSelect 会回调到 onCancelSelect，那里默认要关菜单
+        keepTextActionMenuOnCancelSelect = true
+        try {
+            view.cancelSelect()
+        } finally {
+            keepTextActionMenuOnCancelSelect = false
+        }
+        binding.cursorLeft.invisible()
+        binding.cursorRight.invisible()
+    }
+
+    /**
+     * 通知阅读页当前章重排版。
+     *
+     * UP_CONFIG 的 5 走 `ReadBook.loadContent(forceReload = true)`，
+     * 与 BookmarkDialog.notifyReaderRefresh() 完全同一条通道。
+     *
+     * 必须重排版而不是只 invalidate：Max 的高亮样式是在排版期并进字符样式数组的，
+     * 只重画拿到的是旧样式。6（upContent）理论上够用且更轻（书签查询在排版协程里，
+     * 重排就会重新查），但 BookmarkDialog 走的一直是 5，这里保持一致以免两处行为分叉。
+     *
+     * 代价是连续点色块时会连着触发几次整章重排版。可接受：这与在弹窗里改样式再保存
+     * 是同一种开销，而且面板不关，用户能看到每次改动的实际效果。
+     */
+    private fun notifyHighlightChanged() {
+        postEvent(EventBus.UP_CONFIG, arrayListOf(5))
     }
 
     private fun speak(text: String) {
