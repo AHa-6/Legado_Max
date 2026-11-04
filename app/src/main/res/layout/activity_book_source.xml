@@ -12,6 +12,7 @@
         app:contentInsetStartWithNavigation="0dp"
         app:contentLayout="@layout/view_search"
         app:displayHomeAsUp="true"
+        app:compact="true"
         app:title="@string/book_source" />
 
     <FrameLayout

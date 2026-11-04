@@ -31,6 +31,12 @@
         <attr name="opaque" format="boolean" />
         <attr name="ignoreTopBarOpacity" format="boolean" />
         <attr name="skipTopBarConfig" format="boolean" />
+        <!--
+          紧凑形态：顶栏收成悬浮卡片（左右内缩、圆角、行高 52dp），对齐 Compose 侧
+          AppPageCompactTopBar。默认 false，47 个既有布局行为不变。
+          只改几何，不改配色：背景、壁纸、墨水屏、透明导航栏仍由 applyTopBarConfig 决定。
+        -->
+        <attr name="compact" format="boolean" />
         <attr name="navigationContentDescription" format="reference|string" />
         <attr name="navigationIconTint" format="color|reference" />
         <attr name="themeMode" />

@@ -35,6 +35,20 @@
 
     <dimen name="fixed_height_bottom_padding">8dp</dimen>
 
+    <!--
+      紧凑顶栏（TitleBar 的 app:compact="true" 形态）几何令牌。
+      与 Compose 侧 AppPageCompactTopBar / AppDimens.compactTopBar* 同一套观感：
+      卡片左右内缩、圆角、行高 52dp。这里必须是 XML dimen，因为 TitleBar 是
+      View 体系控件，布局膨胀时就要拿到尺寸，取不到 Compose 的 Dp 常量。
+    -->
+    <dimen name="title_bar_compact_height">52dp</dimen>
+    <dimen name="title_bar_compact_corner_radius">16dp</dimen>
+    <dimen name="title_bar_compact_outer_horizontal">12dp</dimen>
+    <dimen name="title_bar_compact_outer_top">8dp</dimen>
+    <dimen name="title_bar_compact_outer_bottom">6dp</dimen>
+    <!-- 紧凑顶栏居中标题与左右图标之间的安全间隙（配合动态内缩使用） -->
+    <dimen name="title_bar_compact_title_gap">8dp</dimen>
+
     <!-- Shared modern UI shape tokens -->
     <dimen name="ui_panel_radius">10dp</dimen>
     <dimen name="ui_action_radius">9dp</dimen>
