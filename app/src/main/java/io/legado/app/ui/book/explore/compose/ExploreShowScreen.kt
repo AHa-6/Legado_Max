@@ -147,7 +147,9 @@ private fun ExploreShowTopBar(
         onBackClick = actions.onBackClick,
         modifier = modifier,
         actions = {
-            // 页码芯片：窄条里压掉 TextButton 的默认 minWidth 与 12dp 内缩，把宽度让给标题
+            // 页码芯片：窄条里压掉 TextButton 的默认 minWidth 与 12dp 内缩，把宽度让给标题。
+            // 高度保持 48dp：TextButton 不像 IconButton 那样自带 minimumInteractiveComponentSize，
+            // 写更矮就是实打实削热区（accessibility.md §15.3 禁止）。
             TextButton(
                 onClick = {
                     actions.onPagePick(controller.currentPage) { controller.skipPageTo(it) }
@@ -167,7 +169,7 @@ private fun ExploreShowTopBar(
             // 防重复点击靠 onClick 里的 isRefreshing 判空即可
             IconButton(
                 onClick = { if (!isRefreshing) controller.refreshCurrent() },
-                modifier = Modifier.size(AppDimens.compactTopBarIconSize),
+                modifier = Modifier.size(AppDimens.compactTopBarIconTouchSize),
             ) {
                 if (isRefreshing) {
                     CircularProgressIndicator(
@@ -184,7 +186,7 @@ private fun ExploreShowTopBar(
             Box {
                 IconButton(
                     onClick = { showOverflowMenu = true },
-                    modifier = Modifier.size(AppDimens.compactTopBarIconSize),
+                    modifier = Modifier.size(AppDimens.compactTopBarIconTouchSize),
                 ) {
                     Icon(
                         Icons.Default.MoreVert,

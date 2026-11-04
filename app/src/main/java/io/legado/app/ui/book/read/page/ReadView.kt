@@ -262,6 +262,10 @@ class ReadView(context: Context, attrs: AttributeSet) :
                     pressOnTextSelected = true
                 } else {
                     pressOnTextSelected = false
+                    // 没有选区：这一次按下的额外用途是关掉划线菜单（点空白关闭）。
+                    // 菜单是独立窗口，落在它上面的触摸到不了这里，所以不会误关；
+                    // 菜单没显示时宿主那边是空操作。
+                    callBack.dismissTextActionMenuOnTouch()
                 }
                 longPressed = false
                 // 延迟执行长按检测（600ms后执行）
@@ -968,6 +972,26 @@ class ReadView(context: Context, attrs: AttributeSet) :
         fun showReadAloudDialog()
         fun screenOffTimerStart()
         fun showTextActionMenu()
+
+        /**
+         * 手指按在正文上、而此刻并没有选区时的「关掉文字菜单」通道（点空白关闭）。
+         *
+         * ## 为什么这条通道能收到菜单外的触摸
+         * [TextActionMenu] 的窗口标志是 `isTouchable = true` + `isOutsideTouchable = false`，
+         * PopupWindow.computeFlags 因此会给它加 FLAG_NOT_TOUCH_MODAL：窗口不是 touch-modal，
+         * 落在菜单矩形之外的按下会照常派发给下面的 Activity，也就是本 View。
+         * （反过来若设 `isOutsideTouchable = true` 就变成 touch-modal，点输入法面板也可能
+         * 被判成 ACTION_OUTSIDE，正在输入的备注当场被关掉，所以刻意不走那条路。）
+         *
+         * ## 为什么以前没有这条通道
+         * 旧的关闭路径只有两条：选区手柄的 onTouch（入口要求 `isTextSelected == true`）
+         * 与 [onCancelSelect]。打开划线面板时选区早已被撤销，两条都不成立，
+         * 于是点阅读页空白什么都不会发生，只有删掉划线才能收窗。
+         *
+         * 实现方只需在菜单显示时 dismiss；没显示时是空操作，可以无脑挂在每次 ACTION_DOWN 上。
+         * 落在菜单**内**的触摸归菜单窗口，到不了这里，不会误关。
+         */
+        fun dismissTextActionMenuOnTouch()
         fun autoPageStop()
         fun openChapterList()
         fun addBookmark()

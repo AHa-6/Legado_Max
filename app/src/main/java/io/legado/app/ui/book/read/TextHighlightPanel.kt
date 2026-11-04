@@ -2,9 +2,11 @@ package io.legado.app.ui.book.read
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -12,17 +14,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +37,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
@@ -48,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.R
+import io.legado.app.ui.theme.AppDimens
+import io.legado.app.ui.theme.composeActionShape
 import io.legado.app.data.entities.Bookmark
 import kotlinx.coroutines.delay
 
@@ -71,26 +75,24 @@ import kotlinx.coroutines.delay
  * 这里改成自绘的小图标，语义相同、占位只有三分之一。
  */
 
+// 尺寸一律取 AppDimens（theme-styles.md §7.2）：面板与样式条的几何值原先在这里定义，
+// 其中样式条宽度还被 TextActionMenu 抄了一份字面量去估算 popup 居中位置，
+// 改一处漏另一处就会让面板固定偏一半。现在两边指向同一个令牌。
+
 /** 面板最大宽度：popup 是 WRAP_CONTENT，不给上界时备注文本会把菜单撑到整屏宽 */
-internal val PanelMaxWidth = 300.dp
+internal val PanelMaxWidth = AppDimens.highlightPanelMaxWidth
 
 /** 面板最小宽度：太窄时样式条的五个色块会挤成一团 */
-internal val PanelMinWidth = 220.dp
+internal val PanelMinWidth = AppDimens.highlightPanelMinWidth
 
 /** 样式条宽度，[TextActionMenu] 估算 popup 居中位置时用同一个值 */
-internal val HighlightStyleBarWidth = 268.dp
-
-/** 样式条高度：与第一层菜单项的视觉重量对齐，不要比菜单还高 */
-private val StyleBarHeight = 34.dp
-
-/** 样式 / 备注按钮的点击区边长 */
-private val StyleChipSize = 30.dp
+internal val HighlightStyleBarWidth = AppDimens.highlightStyleBarWidth
 
 /** 面板各段之间的竖向间距：第一层菜单、样式条、备注摘要、备注输入框共用一个口径 */
-internal val HighlightSectionGap = 7.dp
+internal val HighlightSectionGap = AppDimens.highlightSectionGap
 
 /** 备注输入框与样式条之间多留一点，避免输入框贴着色块 */
-internal val HighlightNoteEditorGap = 9.dp
+internal val HighlightNoteEditorGap = AppDimens.highlightNoteEditorGap
 
 /**
  * 一行紧凑工具条：备注开关 + 三种高亮样式 + 五个颜色。
@@ -115,9 +117,10 @@ internal fun HighlightStyleBar(
     Row(
         modifier = modifier
             .width(HighlightStyleBarWidth)
-            .height(StyleBarHeight),
+            .height(AppDimens.highlightStyleBarHeight),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        // 旧值 3dp：四个方形按钮 + 颜色条挤在 268dp 里，点起来像一排连体键（第 4 项）
+        horizontalArrangement = Arrangement.spacedBy(AppDimens.highlightChipSpacing),
     ) {
         HighlightNoteButton(
             expanded = noteEditorVisible,
@@ -153,13 +156,13 @@ internal fun HighlightStyleBar(
             contentDescription = stringResource(R.string.bookmark_style_wavy),
             onClick = { onStyleChange(Bookmark.STYLE_WAVY_UNDERLINE) },
         )
-        Spacer(Modifier.width(5.dp))
+        Spacer(Modifier.width(AppDimens.highlightChipColorGap))
         // 颜色条吃掉剩余宽度：五个色块均分，以后要加色块也不会撑破这一行
         Row(
             modifier = Modifier
                 .weight(1f)
-                .height(26.dp)
-                .clip(RoundedCornerShape(13.dp))
+                .height(AppDimens.highlightColorBarHeight)
+                .clip(CircleShape)
                 .background(accentColor.copy(alpha = 0.07f)),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -200,14 +203,17 @@ internal fun HighlightNoteSummary(
     Row(
         modifier = modifier
             .widthIn(min = PanelMinWidth, max = PanelMaxWidth)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(composeActionShape())
             .background(accentColor.copy(alpha = 0.07f))
             .clickable(
                 role = Role.Button,
                 onClickLabel = stringResource(R.string.note_content),
                 onClick = onClick,
             )
-            .padding(horizontal = 9.dp, vertical = 6.dp),
+            .padding(
+                horizontal = AppDimens.highlightNoteSummaryHorizontalPadding,
+                vertical = AppDimens.highlightNoteSummaryVerticalPadding,
+            ),
         verticalAlignment = Alignment.Top,
     ) {
         Icon(
@@ -215,7 +221,7 @@ internal fun HighlightNoteSummary(
             contentDescription = null,
             modifier = Modifier
                 .padding(top = 2.dp)
-                .size(12.dp),
+                .size(AppDimens.highlightNoteSummaryIconSize),
             tint = accentColor,
         )
         Spacer(Modifier.width(6.dp))
@@ -223,7 +229,8 @@ internal fun HighlightNoteSummary(
             text = note,
             modifier = Modifier.weight(1f),
             color = contentColor.copy(alpha = 0.86f),
-            fontSize = 12.sp,
+            // 字号走 typography 档位（§7.4），不再裸写 12.sp
+            style = MaterialTheme.typography.bodySmall,
             lineHeight = 17.sp,
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
@@ -234,15 +241,27 @@ internal fun HighlightNoteSummary(
 /**
  * 备注输入框。
  *
- * ## 输入法为什么以前弹不出来
- * 宿主 popup 是非 focusable 窗口（`isFocusable = false` + `INPUT_METHOD_NOT_NEEDED`），
- * 展开输入框时宿主会先把窗口切成 focusable 再放行输入法，但**输入框自己从没请求过焦点**：
- * 没有焦点就没有 InputConnection，输入法不会弹；同样因为没有焦点，
- * 长按输入框也唤不出系统的复制 / 全选浮条。
+ * ## 形态（第 3 项：原文案是「文本框难看」）
+ * 旧实现是一个 `OutlinedTextField`：Material 默认的 56dp 高方框 + 四角细描边 +
+ * 右上角塞一颗圆形确认键，且高度随 `heightIn(min = 76.dp)` 撑到 76dp，
+ * 放在 8dp 内边距的菜单卡片里像一块贴上去的表单。现在按 NG 的形态重做：
  *
- * 这里补上 `requestFocus()` + `keyboardController.show()`，并在下一帧重试一次 show：
- * 窗口参数（focusable / inputMethodMode）是在同一次点击里刚 update 的，
- * 个别输入法在参数生效前收到 show 会把它忽略掉。
+ * - 顶部一个 14×8dp 的三角指针，指向被划线的那行字——一行 `Canvas` 画出来，
+ *   视觉上把「这个框属于上面那段文字」讲清楚，这是旧版完全没有的；
+ * - 框体是 52dp 高的圆角卡片（[AppDimens.highlightNoteCardHeight]），
+ *   用 [composePanelShape] 与菜单卡片同一套圆角，内边距 12dp；
+ * - 内部是 [BasicTextField] + 自绘占位符，字号取 typography.bodyMedium（14sp）
+ *   配 18sp 行高、最多两行——旧版 maxLines = 5 会把菜单顶到遮住正文；
+ * - 确认键是 36dp 圆形填色钮 + 20dp 对勾，右下角对齐，替代 `trailingIcon`；
+ * - 焦点色、光标色、占位符透明度统一走 `accentColor`，深浅色主题一致。
+ *
+ * ## 输入法为什么以前弹不出来
+ * 宿主 popup 是非 focusable 窗口，展开输入框时宿主会把窗口切成 focusable 再放行输入法，
+ * 但**输入框自己从没请求过焦点**：没有焦点就没有 InputConnection，输入法不会弹。
+ * 本函数用 `requestFocus()` + `keyboardController.show()`，并在 60ms 后重试一次 show
+ * （窗口参数在同一次点击里刚 update，个别输入法在生效前收到 show 会忽略）。
+ * 另一条链路在窗口级：[TextActionMenu] 的 `inputMethodMode` / `softInputMode`
+ * 改为构造时即 NEEDED + ADJUST_RESIZE，与 NG 一致。
  *
  * @param onDone 完成编辑：收起输入框与键盘，草稿由宿主提交
  */
@@ -263,6 +282,8 @@ internal fun HighlightNoteEditor(
         focusRequester.requestFocus()
         keyboardController?.show()
         delay(60)
+        // 窗口级 inputMethodMode 是 last-click 里刚 update 的，个别输入法会忽略
+        // 参数生效前的那一次 show，所以下一拍再要一次
         keyboardController?.show()
     }
 
@@ -274,27 +295,78 @@ internal fun HighlightNoteEditor(
         onDone()
     }
 
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = modifier
-            .widthIn(min = PanelMinWidth, max = PanelMaxWidth)
-            .heightIn(min = 76.dp, max = 150.dp)
-            .focusRequester(focusRequester),
-        placeholder = {
-            Text(
-                text = stringResource(R.string.note_content),
-                fontSize = 13.sp,
-                color = contentColor.copy(alpha = 0.42f),
-            )
-        },
-        trailingIcon = {
+    Column(
+        modifier = modifier.widthIn(min = PanelMinWidth, max = PanelMaxWidth),
+        horizontalAlignment = Alignment.Start,
+    ) {
+        // 顶部指针：指着被划线的那行字，而不是让输入框凭空悬在菜单里
+        Canvas(
+            modifier = Modifier
+                .padding(start = AppDimens.highlightNotePointerInset)
+                .size(
+                    width = AppDimens.highlightNotePointerWidth,
+                    height = AppDimens.highlightNotePointerHeight,
+                ),
+        ) {
+            val path = Path().apply {
+                moveTo(0f, size.height)
+                lineTo(size.width, size.height)
+                lineTo(size.width / 2f, 0f)
+                close()
+            }
+            drawPath(path = path, color = accentColor.copy(alpha = 0.16f))
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = AppDimens.highlightNoteCardHeight)
+                .heightIn(max = AppDimens.highlightNoteEditorMaxHeight)
+                .clip(composeActionShape())
+                .background(accentColor.copy(alpha = 0.10f))
+                .border(
+                    width = AppDimens.highlightNoteCardBorderWidth,
+                    color = accentColor.copy(alpha = 0.32f),
+                    shape = composeActionShape(),
+                )
+                .padding(horizontal = AppDimens.highlightNoteCardPadding, vertical = 0.dp),
+        ) {
+            Box(
+                contentAlignment = Alignment.CenterStart,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.note_content),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = contentColor.copy(alpha = 0.40f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = contentColor,
+                        lineHeight = 18.sp,
+                    ),
+                    cursorBrush = SolidColor(accentColor),
+                    maxLines = 2,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { finishEditing() }),
+                )
+            }
+            Spacer(Modifier.width(AppDimens.highlightChipSpacing))
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(30.dp)
+                    .size(AppDimens.highlightNoteConfirmSize)
                     .clip(CircleShape)
-                    .background(accentColor.copy(alpha = 0.14f))
+                    .background(accentColor.copy(alpha = 0.18f))
                     .clickable(
                         role = Role.Button,
                         onClickLabel = stringResource(R.string.ok),
@@ -304,25 +376,12 @@ internal fun HighlightNoteEditor(
                 Icon(
                     painter = painterResource(R.drawable.ic_check),
                     contentDescription = stringResource(R.string.ok),
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.size(AppDimens.highlightNoteConfirmIconSize),
                     tint = accentColor,
                 )
             }
-        },
-        textStyle = MaterialTheme.typography.bodySmall.copy(color = contentColor),
-        maxLines = 5,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { finishEditing() }),
-        // 光标色走 colors 而不是 cursorBrush：OutlinedTextField 没有 cursorBrush 这个参数，
-        // 它是 BasicTextField 的口子。
-        colors = OutlinedTextFieldDefaults.colors(
-            cursorColor = accentColor,
-            focusedBorderColor = accentColor,
-            unfocusedBorderColor = contentColor.copy(alpha = 0.22f),
-            focusedContainerColor = accentColor.copy(alpha = 0.05f),
-            unfocusedContainerColor = Color.Transparent,
-        ),
-    )
+        }
+    }
 }
 
 /**
@@ -341,8 +400,9 @@ private fun HighlightNoteButton(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(StyleChipSize)
-            .clip(RoundedCornerShape(9.dp))
+            .size(AppDimens.highlightChipTouchSize)
+            // 圆角走 composeActionShape()：与 XML 侧 UiCorner.actionRadius 同源
+            .clip(composeActionShape())
             .background(if (expanded) accentColor.copy(alpha = 0.16f) else Color.Transparent)
             .clickable(
                 role = Role.Button,
@@ -379,8 +439,8 @@ private fun HighlightStyleChip(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(StyleChipSize)
-            .clip(RoundedCornerShape(9.dp))
+            .size(AppDimens.highlightChipTouchSize)
+            .clip(composeActionShape())
             .background(if (selected) accentColor.copy(alpha = 0.16f) else Color.Transparent)
             .clickable(
                 role = Role.Button,
@@ -388,7 +448,7 @@ private fun HighlightStyleChip(
                 onClick = onClick,
             ),
     ) {
-        Canvas(modifier = Modifier.size(18.dp)) {
+        Canvas(modifier = Modifier.size(AppDimens.highlightChipIconSize)) {
             val inkColor = if (selected) accentColor else contentColor.copy(alpha = 0.62f)
             val textStroke = 1.5.dp.toPx()
             val midY = size.height * 0.42f
@@ -479,7 +539,7 @@ private fun HighlightColorDot(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(22.dp)
+            .size(AppDimens.highlightColorDotTouchSize)
             .clip(CircleShape)
             .clickable(
                 role = Role.RadioButton,
@@ -488,16 +548,19 @@ private fun HighlightColorDot(
             ),
     ) {
         if (selected) {
-            Canvas(modifier = Modifier.size(20.dp)) {
+            Canvas(modifier = Modifier.size(AppDimens.highlightColorDotRingSize)) {
                 drawCircle(
                     color = accentColor,
-                    style = Stroke(width = 1.2.dp.toPx()),
+                    style = Stroke(width = AppDimens.highlightColorDotRingWidth.toPx()),
                 )
             }
         }
         Box(
             modifier = Modifier
-                .size(if (selected) 13.dp else 11.dp)
+                .size(
+                    if (selected) AppDimens.highlightColorDotSizeSelected
+                    else AppDimens.highlightColorDotSize
+                )
                 .clip(CircleShape)
                 .background(color)
         )

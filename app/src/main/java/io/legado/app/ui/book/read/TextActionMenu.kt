@@ -25,12 +25,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -79,7 +81,9 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.help.config.AppConfig
+import io.legado.app.ui.theme.AppDimens
 import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.composePanelShape
 import io.legado.app.ui.theme.glassPanelBorderColor
 import io.legado.app.ui.theme.glassPanelContainerTopColor
 import io.legado.app.ui.theme.pageAccentColor
@@ -94,18 +98,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * 菜单卡片圆角。
- *
- * 旧值 3dp 来自 shape_card_view.xml——那是给嵌在页面里的卡片用的，浮在正文上的弹出菜单
- * 用同样的圆角会显得像被裁过一角的方框。14dp 与 Max 自己的 GlassCard（16dp）、
- * 书签卡（10dp）落在同一档，视觉上属于同一套组件而不是遗留控件。
- */
-private val MenuCardCornerRadius = 14.dp
-
-/** 卡片内边距：比旧 XML 的 5dp 略大，圆角变大后内容要离边远一点才不显得挤 */
-private val CardPadding = 8.dp
-
-/**
  * 卡片发丝边宽度。
  *
  * ## 为什么菜单没有阴影
@@ -116,21 +108,14 @@ private val CardPadding = 8.dp
  *
  * 要阴影就得让窗口比内容大一圈（给 background 加 padding 当留白），代价是菜单定位、
  * 拖动 clamp 全都要跟着补偿这一圈偏移。菜单是浮在正文上的小浮层，一层淡阴影换不回这个复杂度，
- * 所以质感改由「14dp 圆角 + 发丝描边 + 分隔线 + 分段间距」表达。
+ * 所以质感改由「面板圆角 + 发丝描边 + 分隔线 + 分段间距」表达。
  */
-private val MenuCardBorderWidth = 1.dp
+private val MenuCardBorderWidth = AppDimens.textMenuCardBorderWidth
 
-/** 菜单项图标尺寸，旧实现按 18 * density 手工绘制位图 */
-private val MenuIconSize = 18.dp
-
-/** 菜单项字号，对应 item_text.xml 的 14sp */
-private val MenuTextSize = 14.sp
-
-/** 菜单项左右内边距，旧实现用 setPaddingRelative(4dp, 0, 4dp, 0) 覆盖了 XML 的 5dp */
-private val MenuCellHorizontalPadding = 4.dp
-
-/** 「更多」按钮尺寸，对应 iv_menu_more 的 24dp */
-private val MoreButtonSize = 24.dp
+// 尺寸与字号不再在本文件定义（theme-styles.md §7.2 / §7.4）：
+// 边长、内边距、间隙一律取 AppDimens，字号取 MaterialTheme.typography 档位，
+// 圆角取 composePanelShape() / composeActionShape()（与 XML 侧 UiCorner 同源）。
+// 旧值 18dp 图标 + 4dp 水平内边距 + 裸 14.sp 正是「按钮太密」与「字号游离于档位之外」的根源。
 
 /**
  * `PopupWindow.update(x, y, width, height)` 的「保持原尺寸」取值。
@@ -141,14 +126,17 @@ private val MoreButtonSize = 24.dp
 private const val KEEP_SIZE = -1
 
 /**
- * 划线态菜单的估算宽度（dp），必须与 TextHighlightPanel 的 `HighlightStyleBarWidth` 一致。
+ * 划线态菜单的估算宽度（dp），直接取 [AppDimens.highlightStyleBarWidth]。
  *
  * 用途是把菜单横向居中于点击点：popup 是 WRAP_CONTENT，showAtLocation 之前量不到实际宽度，
- * 只能估。样式条是这一形态下唯一的定宽元素（268dp），第一层菜单在默认可见项数量下
- * 与之相差不到 10dp，所以按它估居中偏差在几个 dp 内；估偏了也只是略歪，
+ * 只能估。样式条是这一形态下唯一的定宽元素，第一层菜单在默认可见项数量下
+ * 与之相差不到几个 dp，所以按它估居中偏差很小；估偏了也只是略歪，
  * 后面还有 coerceIn 兜住不会跑出屏幕。
+ *
+ * 这里不再写第二个字面量：以前样式条宽度在 TextHighlightPanel 和这里各写一份，
+ * 改宽度时漏改另一处就会让面板固定偏一半——现在两边同源。
  */
-private const val HIGHLIGHT_MENU_WIDTH_DP = 268
+private val HIGHLIGHT_MENU_WIDTH = AppDimens.highlightStyleBarWidth
 
 /** 菜单与点击位置之间留的间隙（dp），避免菜单正好压住被点的那行字 */
 private const val highlightAnchorGap = 8
@@ -294,9 +282,34 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         contentView = composeView
 
         // 设置弹出窗口属性
-        isTouchable = true      // 可触摸
-        isOutsideTouchable = false  // 点击外部不关闭
-        isFocusable = false     // 不获取焦点
+        //
+        // ## 「点空白关闭」为什么不靠 isOutsideTouchable
+        // 这里刻意与 NG 保持 false。置 true 虽然能让 PopupDecorView 收到 ACTION_OUTSIDE 自己关掉，
+        // 但代价是：备注框展开时窗口是 focusable 的，输入法也是另一个窗口，
+        // 部分设备会把「点输入法面板」一并判成窗外触摸，正在输入的备注当场被关掉。
+        // 关闭通道因此放在宿主侧（[ReadView.onTouchEvent] 的 ACTION_DOWN →
+        // `callBack.dismissTextActionMenuOnTouch()`），那里能区分触摸落在正文上还是别处，
+        // 与 NG 的宿主回调 `onTextHighlightMenuDismissed` 是同一个思路。
+        //
+        // 旧实现并非没有这条通道，而是它只挂在两个选区手柄上、入口还要求
+        // `readView.isTextSelected == true`；划线面板打开时选区早已撤销，
+        // 于是点空白什么都不会发生（第 1 项的根因）。
+        isTouchable = true                  // 可触摸
+        isOutsideTouchable = false          // 关闭由宿主判定，理由见上
+        isFocusable = false                 // 不获取焦点
+
+        // 输入法：NG 在构造时就设为 NEEDED + ADJUST_RESIZE，Max 原来初始是 NOT_NEEDED、
+        // 展开备注框时才改成 NEEDED + ADJUST_PAN。差异落在窗口级参数上：ADJUST_PAN 只平移不重算
+        // 窗口尺寸，NEEDED 又与 NOT_NEEDED 的首次下发时机错位，个别输入法因此拿不到可用的
+        // InputConnection（第 2 项「唤不起输入法」的窗口级成因，Compose 侧焦点链是另一条）。
+        // 这里与 NG 对齐；非聚焦态带 FLAG_ALT_FOCUSABLE_IM，不会平白抬键盘。
+        inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
+        // SOFT_INPUT_ADJUST_RESIZE 自 API 30 起标废（推荐走 WindowInsets），但 PopupWindow
+        // 的软键盘行为至今仍只能通过 softInputMode 这个入口设定，没有等价替代；
+        // 本仓对这类"废弃但仍是唯一途径"的系统 API 统一用 @Suppress("DEPRECATION")，
+        // 见 AppContextWrapper / PermissionActivity。
+        @Suppress("DEPRECATION")
+        softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
 
         // 菜单消失时回到第一页。旧实现要复位图标、隐藏更多列表、恢复主列表三件事，
         // 在声明式写法里这三件都由 showingMore 一个布尔推导出来
@@ -317,7 +330,9 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
             // 放在自己的状态清干净之后：宿主的 selectedText 会回退成读选区，
             // 反过来先通知宿主就可能让它在切换瞬间读到半新半旧的值
             callBack.onTextActionMenuClosed()
-            inputMethodMode = PopupWindow.INPUT_METHOD_NOT_NEEDED
+            // 不再把 inputMethodMode 拨回 NOT_NEEDED：那样下次 show 就回到「初始 NOT_NEEDED」，
+            // 展开备注框时再切成 NEEDED，首次下发时机与窗口 attach 错位，正是输入法弹不出的
+            // 窗口级成因。NG 全程 NEEDED + ADJUST_RESIZE，只切 isFocusable。
             // 不及时放开会对已 dismiss 的窗口根保持强引用
             popupRoot = null
         }
@@ -519,7 +534,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      * 定位策略与 [show] 同源（上方空间充裕就 `Gravity.BOTTOM` 向上生长，否则向下），
      * 差别是锚点只有一个点击位置，没有选区手柄那一套。
      *
-     * 横向刻意**居中于点击点**再夹回屏幕：菜单宽度按 [HIGHLIGHT_MENU_WIDTH_DP] 估算，
+     * 横向刻意**居中于点击点**再夹回屏幕：菜单宽度按 [HIGHLIGHT_MENU_WIDTH] 估算，
      * 若照 [show] 那样直接把 x 当左边，点在屏幕右半边时面板会有一半在屏幕外。
      *
      * @param x 点击位置 X（视图坐标，与 [show] 的 startX 同口径）
@@ -542,7 +557,12 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
 
         val density = context.resources.displayMetrics.density
         val gap = (highlightAnchorGap * density).roundToInt()
-        val panelWidth = (HIGHLIGHT_MENU_WIDTH_DP * density).roundToInt()
+        // 注意：这里的 density 是 displayMetrics.density（Float），不是 Compose 的 Density，
+        // 所以不能用 with(density) { roundToPx() }（那个扩展的 receiver 类型不对，编译不过）。
+        // 换算沿用本文件 loadMenuIcon 的同一口径：令牌 .value * density。
+        // 宽度仍然取自 HIGHLIGHT_MENU_WIDTH（= AppDimens.highlightStyleBarWidth），
+        // 与 TextHighlightPanel 内样式条共用同一来源，避免两处字面量各自漂移。
+        val panelWidth = (HIGHLIGHT_MENU_WIDTH.value * density).roundToInt()
         val rootWidth = view.rootView.width.takeIf { it > 0 }
             ?: context.resources.displayMetrics.widthPixels
 
@@ -601,27 +621,32 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     }
 
     /**
-     * 展开 / 收起备注输入框。
+     * 展开 / 收起备注输入框（第 2 项：唤不起输入法）。
      *
      * 顺序不能换：`isFocusable` 的 setter 只是改字段、不会重新下发窗口参数，
      * 而 `inputMethodMode` 的 setter 在窗口已显示时会调 `update()`，
      * 由那次 update 顺带把新的 focusable 标志带上。所以「先设 focusable、
      * 再设 inputMethodMode」才生效（NG 同序）。
      *
+     * 与旧实现的两处差异：
+     * - 展开前先把「更多」列表收掉。展开态下窗口高度本来就紧张，
+     *   再叠一层「更多」会把备注框顶出屏幕（NG 的 dismissMoreMenu 同理）；
+     * - 不再动 softInputMode。`SOFT_INPUT_ADJUST_PAN` 只把窗口平移、不重算尺寸，
+     *   输入法抬起后菜单可能被推出屏幕；构造时已统一设成 ADJUST_RESIZE，与 NG 一致。
+     *
      * 收起时提交草稿：输入到一半点别处，备注也该留住。
      */
     private fun setNoteEditorVisible(visible: Boolean) {
         if (textHighlightState.value == null || noteEditorVisibleState.value == visible) return
         if (visible) {
+            uiState.showingMore = false
             isFocusable = true
             inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
             noteEditorVisibleState.value = true
         } else {
             commitTextHighlightNote()
             noteEditorVisibleState.value = false
             isFocusable = false
-            inputMethodMode = PopupWindow.INPUT_METHOD_NOT_NEEDED
         }
     }
 
@@ -692,7 +717,8 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
             Color.Black.copy(alpha = 0.08f)
         }
         val textHighlight = textHighlightState.value
-        val shape = RoundedCornerShape(MenuCardCornerRadius)
+        // 圆角与 XML 侧 UiCorner 同源（theme-styles.md §7.2），不在 Compose 侧另设常量
+        val shape = composePanelShape()
 
         // 划线态的第一层条目：把「书签」槽换成「删除划线」。分页口径与 reloadMenuItems
         // 保持一致——先合并再替换再切回两页，避免两页各自补一个兜底删除项。
@@ -739,7 +765,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                         }
                     }
                 )
-                .padding(CardPadding)
+                .padding(AppDimens.textMenuCardPadding)
         ) {
             // ── 第一段：文字动作菜单，划线态下也照常显示 ──
             if (uiState.expanded) {
@@ -835,6 +861,17 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      *
      * 点击与长按都走 [combinedClickable]，指示层用 [ripple]——按下态由绘制层接管，
      * 不依赖一次重组（快速点击时按下/抬起落在同一帧，自带底色方案看不到反馈）。
+     *
+     * ## 密度（第 4 项）
+     * 旧实现是「18dp 图标 + `padding(horizontal = 4.dp)`」，行高由文字自然撑开，
+     * 一排五六个菜单项看起来像一条连体按钮带。现在三处一起改：
+     * - 单元格最小高度 48dp（accessibility.md §15.3 硬规则，旧值约 26dp）；
+     * - 左右内边距 4dp → 10dp，相邻两项之间因此有 20dp 呼吸空间；
+     * - 图标与标题之间补 6dp 间隙，旧实现两者紧贴。
+     * 行高变大后菜单自然「加长」（第 5 项），不必额外加空白。
+     *
+     * 字号取 typography.bodyMedium（14sp）而不是裸 `14.sp`：§7.4 要求所有字号走档位，
+     * 这样字号跟随用户的字体缩放与全局排版配置。
      */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
@@ -843,51 +880,59 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
+                .heightIn(min = AppDimens.textMenuCellMinTouchSize)
                 .combinedClickable(
                     interactionSource = interactionSource,
                     indication = ripple(color = contentColor.copy(alpha = 0.12f)),
                     onClick = { onEntryClick(entry) },
                     onLongClick = { toggleSpeakMode() }
                 )
-                .padding(horizontal = MenuCellHorizontalPadding)
+                .padding(horizontal = AppDimens.textMenuCellHorizontalPadding)
         ) {
+            val iconModifier = Modifier.size(AppDimens.textMenuIconSize)
             when {
                 entry.iconResId != null -> Image(
                     painter = painterResource(entry.iconResId),
                     contentDescription = null,
                     colorFilter = ColorFilter.tint(contentColor),
-                    modifier = Modifier.size(MenuIconSize)
+                    modifier = iconModifier
                 )
 
                 entry.iconBitmap != null -> Image(
                     bitmap = entry.iconBitmap,
                     contentDescription = null,
-                    modifier = Modifier.size(MenuIconSize)
+                    modifier = iconModifier
                 )
+            }
+            if (entry.iconResId != null || entry.iconBitmap != null) {
+                Spacer(Modifier.width(AppDimens.textMenuCellIconGap))
             }
             Text(
                 text = entry.title,
                 color = contentColor,
-                fontSize = MenuTextSize,
+                style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
     }
 
-    /** 「更多 / 返回」按钮，顶替 iv_menu_more 的 setImageResource 切换 */
+    /**
+     * 「更多 / 返回」按钮，顶替 iv_menu_more 的 setImageResource 切换。
+     *
+     * 旧实现是「24dp 图标本身就是点击区」，远低于 accessibility.md §15.3 的 48dp 下限，
+     * 在这一排 48dp 高的菜单项旁边也小得突兀。现在改成 48dp 命中区套 22dp 图标，
+     * 图标视觉大小基本不变，但手指能按到的范围翻倍。
+     */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun MoreButton(contentColor: Color, showingMore: Boolean, onToggle: () -> Unit) {
         val interactionSource = remember { MutableInteractionSource() }
-        Image(
-            painter = painterResource(
-                if (showingMore) R.drawable.ic_arrow_back else R.drawable.ic_more_vert
-            ),
-            contentDescription = stringResource(R.string.more_menu),
-            colorFilter = ColorFilter.tint(contentColor),
+        val description = stringResource(R.string.more_menu)
+        Box(
+            contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(MoreButtonSize)
+                .size(AppDimens.textMenuMoreTouchSize)
                 .combinedClickable(
                     interactionSource = interactionSource,
                     // 对应旧布局的 ?attr/selectableItemBackgroundBorderless
@@ -895,7 +940,16 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                     onClick = onToggle,
                     onLongClick = null
                 )
-        )
+        ) {
+            Image(
+                painter = painterResource(
+                    if (showingMore) R.drawable.ic_arrow_back else R.drawable.ic_more_vert
+                ),
+                contentDescription = description,
+                colorFilter = ColorFilter.tint(contentColor),
+                modifier = Modifier.size(AppDimens.textMenuMoreIconSize)
+            )
+        }
     }
 
     /**
@@ -1035,7 +1089,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         }.getOrNull()
         if (icon == null) return null
         val density = context.resources.displayMetrics.density
-        val sizePx = (MenuIconSize.value * density).toInt()
+        val sizePx = (AppDimens.textMenuIconSize.value * density).toInt()
         return runCatching { icon.toBitmap(sizePx, sizePx).asImageBitmap() }.getOrNull()
     }
 

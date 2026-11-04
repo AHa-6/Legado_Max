@@ -1330,6 +1330,29 @@ class ReadBookActivity :
     }
 
     /**
+     * 手指按在正文上、且此刻没有选区：如果划线菜单还开着就关掉（点空白关闭）。
+     *
+     * ## 为什么放在这里而不是改 popup 的 isOutsideTouchable
+     * 菜单窗口刻意保持 `isOutsideTouchable = false`。置 true 会让窗口变成 touch-modal，
+     * 而备注框展开时菜单窗口是 focusable 的、输入法是另一个窗口，部分设备会把
+     * 「点输入法面板」也判成窗外触摸，正在输入的备注当场被关掉。
+     * 保持 false 则 [ReadView] 能照常收到菜单外的按下，关闭判定落在宿主侧，可控。
+     *
+     * ## 与 [onTouch] 的分工
+     * [onTouch] 只挂在两个选区手柄上，入口还有 `if (!readView.isTextSelected) return false`；
+     * 划线面板打开时选区早已撤销，那条路必然失效——这正是「只有删掉划线才能关菜单」的原因。
+     * 本方法挂在 ACTION_DOWN 的无选区分支，补上了缺失的那一半。
+     *
+     * 不会误关：落在菜单矩形内的触摸归菜单窗口，到不了 [ReadView]。
+     * `dismiss()` 对已关闭的窗口是空操作，与其它关闭路径重复触发也没有副作用。
+     */
+    override fun dismissTextActionMenuOnTouch() {
+        if (textActionMenu.isShowing) {
+            textActionMenu.dismiss()
+        }
+    }
+
+    /**
      * 文本选择菜单操作完成
      */
     override fun onMenuActionFinally() = binding.run {

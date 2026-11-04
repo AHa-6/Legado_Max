@@ -422,12 +422,15 @@ object AppDimens {
     val compactTopBarTitleSpacing: Dp = 4.dp
 
     /**
-     * 紧凑顶栏图标按钮边长。
+     * 紧凑顶栏图标按钮的命中区边长。
      *
-     * Material3 默认 IconButton 的最小热区是 48dp，但窄条里排 4 个按钮就占掉 192dp，
-     * 标题只剩百余 dp 可用。压到 40dp 仍在可点范围内，但把标题区推宽了约 32dp。
+     * 固定 48dp（theme-styles.md §15.3 强制下限）。52dp 行高容得下，不会溢出。
+     * 曾经压到 40dp 想把宽度让给标题，但那等于把触控目标削到 40dp：IconButton 内部虽然调
+     * minimumInteractiveComponentSize，外层 size(40dp) 会先把约束固定成 40dp，内部强制被
+     * coerce 回 40dp，量出来就是 40dp 热区。§15.3 明确禁止靠缩小命中区换紧凑，视觉紧凑只能
+     * 从字号、内缩、留白上省。
      */
-    val compactTopBarIconSize: Dp = 40.dp
+    val compactTopBarIconTouchSize: Dp = 48.dp
 
     /**
      * 紧凑顶栏内页码芯片的水平内缩。
@@ -437,8 +440,14 @@ object AppDimens {
      */
     val compactTopBarChipPaddingHorizontal: Dp = 8.dp
 
-    /** 紧凑顶栏内页码芯片的高度（低于行高，保持胶囊观感而不撑满） */
-    val compactTopBarChipHeight: Dp = 34.dp
+    /**
+     * 紧凑顶栏内页码芯片的高度。
+     *
+     * 取 48dp 而非更矮的胶囊：TextButton 不像 IconButton 那样自带
+     * minimumInteractiveComponentSize（Button/Surface 路径里没有这道强制），写 34dp 就是实打实的
+     * 34dp 热区。芯片只压缩水平内缩，不动垂直热区。
+     */
+    val compactTopBarChipHeight: Dp = 48.dp
 
     /** 紧凑顶栏刷新态转圈的直径 */
     val compactTopBarProgressSize: Dp = 18.dp
@@ -572,4 +581,101 @@ object AppDimens {
 
     /** 拖柄内箭头颜色相对主色的透明度 */
     const val SCROLLBAR_HANDLE_ICON_ALPHA = 0.86f
+
+    // ── 文字操作菜单与划线操作区（TextActionMenu / TextHighlightPanel）──
+    // 这一组原来散落在两个 Compose 文件的私有常量里（theme-styles.md §7.2）。
+    // 圆角不在这里：一律经 composePanelShape() / composeActionShape() 从 lib/theme/UiCorner 取。
+
+    /** 菜单项图标的绘制边长（视觉尺寸，命中区由单元格高度保证） */
+    val textMenuIconSize: Dp = 18.dp
+
+    /** 菜单项命中区的最小高度（accessibility.md §15.3 的 48dp 下限） */
+    val textMenuCellMinTouchSize: Dp = 48.dp
+
+    /** 菜单项左右内边距。旧值是 4dp，一排菜单项挤成一团的主因 */
+    val textMenuCellHorizontalPadding: Dp = 10.dp
+
+    /** 菜单项图标与标题之间的间隙 */
+    val textMenuCellIconGap: Dp = 6.dp
+
+    /** 菜单卡片内边距 */
+    val textMenuCardPadding: Dp = 10.dp
+
+    /** 菜单卡片发丝描边宽度 */
+    val textMenuCardBorderWidth: Dp = 1.dp
+
+    /** 「更多」按钮命中区边长（图标 24dp 做点击区远低于 48dp） */
+    val textMenuMoreTouchSize: Dp = 48.dp
+
+    /** 「更多」图标绘制边长 */
+    val textMenuMoreIconSize: Dp = 22.dp
+
+    /** 划线样式条宽度。同时用于 popup 居中估算，两边必须同源 */
+    val highlightStyleBarWidth: Dp = 284.dp
+
+    /** 划线样式条高度。旧值 34dp 与 48dp 命中区下限冲突，抬到 44dp */
+    val highlightStyleBarHeight: Dp = 44.dp
+
+    /** 样式 / 备注按钮的命中区边长 */
+    val highlightChipTouchSize: Dp = 40.dp
+
+    /** 样式按钮内图标的绘制边长 */
+    val highlightChipIconSize: Dp = 20.dp
+
+    /** 样式条内各按钮之间的间隙。旧值 3dp，点起来像连体键 */
+    val highlightChipSpacing: Dp = 4.dp
+
+    /** 样式按钮与颜色条之间的分隔间距 */
+    val highlightChipColorGap: Dp = 6.dp
+
+    /** 颜色条高度 */
+    val highlightColorBarHeight: Dp = 32.dp
+
+    /** 单个颜色圆点的命中区边长 */
+    val highlightColorDotTouchSize: Dp = 32.dp
+
+    /** 色点直径（选中 / 未选中） */
+    val highlightColorDotSizeSelected: Dp = 14.dp
+    val highlightColorDotSize: Dp = 12.dp
+
+    /** 选中色点的外圈描边：直径与线宽（环在 32dp 命中区里居中） */
+    val highlightColorDotRingSize: Dp = 20.dp
+    val highlightColorDotRingWidth: Dp = 1.2.dp
+
+    /** 备注输入框卡片本体高度（不含顶部三角指针） */
+    val highlightNoteCardHeight: Dp = 52.dp
+
+    /** 备注输入框卡片的左右内边距 */
+    val highlightNoteCardPadding: Dp = 12.dp
+
+    /** 备注输入框卡片描边宽度 */
+    val highlightNoteCardBorderWidth: Dp = 1.dp
+
+    /** 备注输入框的最小 / 最大高度（长备注时向上长，超过则内部滚动） */
+    val highlightNoteEditorMinHeight: Dp = 56.dp
+    val highlightNoteEditorMaxHeight: Dp = 148.dp
+
+    /** 备注确认圆钮的直径与图标边长 */
+    val highlightNoteConfirmSize: Dp = 36.dp
+    val highlightNoteConfirmIconSize: Dp = 20.dp
+
+    /** 备注框顶部三角指针的宽 / 高 / 水平内缩 */
+    val highlightNotePointerWidth: Dp = 14.dp
+    val highlightNotePointerHeight: Dp = 8.dp
+    val highlightNotePointerInset: Dp = 16.dp
+
+    /** 面板最大 / 最小宽度 */
+    val highlightPanelMaxWidth: Dp = 320.dp
+    val highlightPanelMinWidth: Dp = 220.dp
+
+    /** 面板各段之间的竖向间距 */
+    val highlightSectionGap: Dp = 10.dp
+
+    /** 备注框与样式条之间的额外间距 */
+    val highlightNoteEditorGap: Dp = 10.dp
+
+    /** 备注摘要行的内边距与图标边长 */
+    val highlightNoteSummaryHorizontalPadding: Dp = 10.dp
+    val highlightNoteSummaryVerticalPadding: Dp = 7.dp
+    val highlightNoteSummaryIconSize: Dp = 13.dp
 }

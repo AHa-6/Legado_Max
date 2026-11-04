@@ -128,13 +128,13 @@ fun AppPageTopBar(
  * - 卡片形态：左右内缩、四角圆角、与状态栏留出一段空隙，视觉上比满宽顶栏窄一圈；
  * - 行高 52dp（[AppDimens.compactTopBarHeight]，少于满宽顶栏的 56dp）；
  * - 标题居中、单行省略，字号降一档到 typography.titleMedium；
- * - 图标按钮收到 40dp，把省下来的宽度让给标题。
+ * - 图标按钮命中区仍是 48dp（accessibility.md §15.3 强制下限），紧凑只从字号、内缩、留白上省。
  *
  * 不改 [AppPageTopBar] 默认行为的原因：它有二十多个调用点，收窄只能做成新增可选形态，否则全体页面跟着变脸。
  *
+ * @param modifier Modifier（structure.md §3.1：永远是第一个参数）
  * @param title 标题文案（必须已资源化）
  * @param onBackClick 返回键点击
- * @param modifier Modifier
  * @param backIcon 返回图标（默认 ArrowBack）
  * @param backContentDescription 返回键无障碍描述（默认“返回”）
  * @param actions 右侧操作区
@@ -142,9 +142,9 @@ fun AppPageTopBar(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppPageCompactTopBar(
+    modifier: Modifier = Modifier,
     title: String,
     onBackClick: () -> Unit,
-    modifier: Modifier = Modifier,
     backIcon: ImageVector = Icons.AutoMirrored.Filled.ArrowBack,
     backContentDescription: String? = null,
     actions: @Composable RowScope.() -> Unit = {}
@@ -174,7 +174,7 @@ fun AppPageCompactTopBar(
             ) {
                 IconButton(
                     onClick = onBackClick,
-                    modifier = Modifier.size(AppDimens.compactTopBarIconSize),
+                    modifier = Modifier.size(AppDimens.compactTopBarIconTouchSize),
                 ) {
                     Icon(
                         backIcon,
