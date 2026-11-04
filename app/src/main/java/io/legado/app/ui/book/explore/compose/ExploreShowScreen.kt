@@ -3,13 +3,18 @@ package io.legado.app.ui.book.explore.compose
 import io.legado.app.lib.theme.eInkGrayscale
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,14 +29,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import io.legado.app.R
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.domain.model.BookShelfState
 import io.legado.app.ui.theme.AppDimens
-import io.legado.app.ui.widget.components.AppPageTopBar
+import io.legado.app.ui.widget.components.AppPageCompactTopBar
 import io.legado.app.ui.widget.components.BlockProgressChip
 import io.legado.app.ui.widget.components.CategoryTabs
 import io.legado.app.ui.widget.components.AppScaffold
@@ -134,29 +138,24 @@ private fun ExploreShowTopBar(
         },
     )
 
-    AppPageTopBar(
+    // 顶栏刷新态：footer 或顶部翻页任一在加载即视为"正在刷新"，
+    // 此时按钮换成转圈，避免连点触发 refreshCurrent 把列表反复清空
+    val isRefreshing = controller.footer.isLoading || controller.topFooter.isLoading
+
+    AppPageCompactTopBar(
         title = controller.pageTitle,
         onBackClick = actions.onBackClick,
         modifier = modifier,
         actions = {
-            if (controller.layoutMode != EXPLORE_LAYOUT_LIST) {
-                IconButton(
-                    onClick = {
-                        actions.onColumnPick(controller.effectiveColumnCount()) {
-                            controller.selectColumnCount(it)
-                        }
-                    },
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_view_quilt),
-                        contentDescription = stringResource(R.string.select_column_count),
-                    )
-                }
-            }
+            // 页码芯片：窄条里压掉 TextButton 的默认 minWidth 与 12dp 内缩，把宽度让给标题
             TextButton(
                 onClick = {
                     actions.onPagePick(controller.currentPage) { controller.skipPageTo(it) }
                 },
+                contentPadding = PaddingValues(
+                    horizontal = AppDimens.compactTopBarChipPaddingHorizontal,
+                ),
+                modifier = Modifier.height(AppDimens.compactTopBarChipHeight),
             ) {
                 Text(
                     text = stringResource(R.string.menu_page, controller.currentPage),
@@ -164,8 +163,29 @@ private fun ExploreShowTopBar(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            // 不设 enabled=false：禁用态会把 LocalContentColor 换成灰色，转圈几乎看不见。
+            // 防重复点击靠 onClick 里的 isRefreshing 判空即可
+            IconButton(
+                onClick = { if (!isRefreshing) controller.refreshCurrent() },
+                modifier = Modifier.size(AppDimens.compactTopBarIconSize),
+            ) {
+                if (isRefreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(AppDimens.compactTopBarProgressSize),
+                        strokeWidth = AppDimens.compactTopBarProgressStroke,
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = stringResource(R.string.refresh),
+                    )
+                }
+            }
             Box {
-                IconButton(onClick = { showOverflowMenu = true }) {
+                IconButton(
+                    onClick = { showOverflowMenu = true },
+                    modifier = Modifier.size(AppDimens.compactTopBarIconSize),
+                ) {
                     Icon(
                         Icons.Default.MoreVert,
                         contentDescription = stringResource(R.string.more),
@@ -176,6 +196,18 @@ private fun ExploreShowTopBar(
                     expanded = showOverflowMenu,
                     onDismissRequest = { showOverflowMenu = false },
                 ) {
+                    // 列数选择原先占顶栏一个图标位，窄条放不下，挪到溢出菜单首项
+                    if (controller.layoutMode != EXPLORE_LAYOUT_LIST) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.select_column_count)) },
+                            onClick = {
+                                showOverflowMenu = false
+                                actions.onColumnPick(controller.effectiveColumnCount()) {
+                                    controller.selectColumnCount(it)
+                                }
+                            },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.add_all_to_shelf)) },
                         onClick = {

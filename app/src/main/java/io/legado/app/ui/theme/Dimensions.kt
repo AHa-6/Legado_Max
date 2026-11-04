@@ -401,6 +401,51 @@ object AppDimens {
     /** 顶栏高度：新版发现/订阅头部行自占的高度（对齐旧版 TitleBar 的 toolbar 56dp） */
     val topBarHeight: Dp = 56.dp
 
+    // ── 紧凑顶栏（AppPageCompactTopBar，参考发现页窄条）──
+
+    /** 紧凑顶栏行高：比 [topBarHeight] 矮 4dp，视觉更轻 */
+    val compactTopBarHeight: Dp = 52.dp
+
+    /** 紧凑顶栏卡片四角圆角 */
+    val compactTopBarCornerRadius: Dp = 16.dp
+
+    /** 紧凑顶栏卡片距屏幕左右边界的内缩 */
+    val compactTopBarOuterHorizontal: Dp = 12.dp
+
+    /** 紧凑顶栏卡片距状态栏的上边距（悬浮观感来源） */
+    val compactTopBarOuterTop: Dp = 8.dp
+
+    /** 紧凑顶栏卡片距内容区的下边距 */
+    val compactTopBarOuterBottom: Dp = 6.dp
+
+    /** 紧凑顶栏标题与返回键之间的水平留白 */
+    val compactTopBarTitleSpacing: Dp = 4.dp
+
+    /**
+     * 紧凑顶栏图标按钮边长。
+     *
+     * Material3 默认 IconButton 的最小热区是 48dp，但窄条里排 4 个按钮就占掉 192dp，
+     * 标题只剩百余 dp 可用。压到 40dp 仍在可点范围内，但把标题区推宽了约 32dp。
+     */
+    val compactTopBarIconSize: Dp = 40.dp
+
+    /**
+     * 紧凑顶栏内页码芯片的水平内缩。
+     *
+     * Material3 TextButton 默认 minWidth 64dp + 左右各 12dp 内缩，在 52dp 的窄条里
+     * 光一个"第 N 页"就吃掉约 90dp；压到 8dp 内缩后约省 20dp 给标题。
+     */
+    val compactTopBarChipPaddingHorizontal: Dp = 8.dp
+
+    /** 紧凑顶栏内页码芯片的高度（低于行高，保持胶囊观感而不撑满） */
+    val compactTopBarChipHeight: Dp = 34.dp
+
+    /** 紧凑顶栏刷新态转圈的直径 */
+    val compactTopBarProgressSize: Dp = 18.dp
+
+    /** 紧凑顶栏刷新态转圈的线宽 */
+    val compactTopBarProgressStroke: Dp = 2.dp
+
     /** 书架状态小绿点尺寸（列表 8dp、网格/瀑布流 6dp，对齐 CircleImageView） */
     val exploreShowShelfDotSizeList: Dp = 8.dp
     val exploreShowShelfDotSizeSmall: Dp = 6.dp

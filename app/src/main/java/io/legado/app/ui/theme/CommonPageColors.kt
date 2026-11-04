@@ -134,6 +134,27 @@ fun Modifier.pageTopBarBackground(colors: PageTopBarColors): Modifier {
         .drawTopBarWallpaper(colors)
 }
 
+/**
+ * 顶栏卡片形态的背景（theme-styles.md §7.7.1 的悬浮变体）。
+ *
+ * 与 [pageTopBarBackground] 同源：阴影/容器色/壁纸全部取 [PageTopBarColors]，
+ * 不在调用点另配色。两点差异：
+ * - 不带 fillMaxWidth：宽度由调用方的内缩 padding 决定，卡片才能两侧留白；
+ * - 四角圆角：原版只圆底边两角（满宽贴边），悬浮卡片必须四角都圆才不像断头板。
+ *
+ * 圆角以配置值为准但不低于 [AppDimens.compactTopBarCornerRadius]：
+ * 顶栏样式非 regular 时 colors.cornerRadius 恒为 0，悬浮卡片若真用直角会像一块贴上去的色块。
+ */
+@Composable
+fun Modifier.pageTopBarCardBackground(colors: PageTopBarColors): Modifier {
+    val shape = RoundedCornerShape(colors.cornerRadius.coerceAtLeast(AppDimens.compactTopBarCornerRadius))
+    return this
+        .shadow(colors.shadowElevation, shape, clip = false)
+        .clip(shape)
+        .background(colors.containerColor)
+        .drawTopBarWallpaper(colors)
+}
+
 @Composable
 private fun Modifier.drawTopBarWallpaper(colors: PageTopBarColors): Modifier {
     val wallpaper = colors.wallpaperFile

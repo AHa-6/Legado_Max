@@ -1,28 +1,41 @@
 package io.legado.app.ui.widget.components
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import io.legado.app.R
+import io.legado.app.ui.theme.AppDimens
 import io.legado.app.ui.theme.pageTopBarBackground
+import io.legado.app.ui.theme.pageTopBarCardBackground
 import io.legado.app.ui.theme.pageTopBarColors
 
 /**
@@ -106,6 +119,89 @@ fun AppPageTopBar(
 }
 
 // ── 预览（§10.1 强制）────────────────────────────────────────
+
+/**
+ * 页面紧凑顶栏（悬浮卡片形态，[AppPageTopBar] 的可选形态）。
+ *
+ * 与 [AppPageTopBar] 的差异只在几何，配色仍走 [pageTopBarColors] / [pageTopBarCardBackground]，
+ * 因此壁纸、夜间、透明导航栏、墨水屏等全部配置照常生效：
+ * - 卡片形态：左右内缩、四角圆角、与状态栏留出一段空隙，视觉上比满宽顶栏窄一圈；
+ * - 行高 52dp（[AppDimens.compactTopBarHeight]，少于满宽顶栏的 56dp）；
+ * - 标题居中、单行省略，字号降一档到 typography.titleMedium；
+ * - 图标按钮收到 40dp，把省下来的宽度让给标题。
+ *
+ * 不改 [AppPageTopBar] 默认行为的原因：它有二十多个调用点，收窄只能做成新增可选形态，否则全体页面跟着变脸。
+ *
+ * @param title 标题文案（必须已资源化）
+ * @param onBackClick 返回键点击
+ * @param modifier Modifier
+ * @param backIcon 返回图标（默认 ArrowBack）
+ * @param backContentDescription 返回键无障碍描述（默认“返回”）
+ * @param actions 右侧操作区
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppPageCompactTopBar(
+    title: String,
+    onBackClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    backIcon: ImageVector = Icons.AutoMirrored.Filled.ArrowBack,
+    backContentDescription: String? = null,
+    actions: @Composable RowScope.() -> Unit = {}
+) {
+    val colors = pageTopBarColors()
+    // 外层先贴状态栏，再给卡片留出四周空隙；内层才是卡片本体
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(
+                start = AppDimens.compactTopBarOuterHorizontal,
+                top = AppDimens.compactTopBarOuterTop,
+                end = AppDimens.compactTopBarOuterHorizontal,
+                bottom = AppDimens.compactTopBarOuterBottom,
+            ),
+    ) {
+        // LocalContentColor 与 Material3 TopAppBar 同语义：调用点的 IconButton / 图标 /
+        // 转圈不必各自取色，避免顶栏内出现第二种前景色（theme-styles.md §7.7.4）
+        CompositionLocalProvider(LocalContentColor provides colors.contentColor) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(AppDimens.compactTopBarHeight)
+                    .pageTopBarCardBackground(colors),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = onBackClick,
+                    modifier = Modifier.size(AppDimens.compactTopBarIconSize),
+                ) {
+                    Icon(
+                        backIcon,
+                        contentDescription = backContentDescription
+                            ?: stringResource(R.string.back),
+                    )
+                }
+                Text(
+                    text = title,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = AppDimens.compactTopBarTitleSpacing),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End,
+                    content = actions,
+                )
+            }
+        }
+    }
+}
 
 @Preview(showBackground = true)
 @OptIn(ExperimentalMaterial3Api::class)
