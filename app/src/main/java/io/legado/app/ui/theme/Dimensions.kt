@@ -586,17 +586,79 @@ object AppDimens {
     // 这一组原来散落在两个 Compose 文件的私有常量里（theme-styles.md §7.2）。
     // 圆角不在这里：一律经 composePanelShape() / composeActionShape() 从 lib/theme/UiCorner 取。
 
-    /** 菜单项图标的绘制边长（视觉尺寸，命中区由单元格高度保证） */
-    val textMenuIconSize: Dp = 18.dp
+    /** 菜单项图标的绘制边长（视觉尺寸，命中区由单元格宽高保证） */
+    val textMenuIconSize: Dp = 20.dp
 
-    /** 菜单项命中区的最小高度（accessibility.md §15.3 的 48dp 下限） */
-    val textMenuCellMinTouchSize: Dp = 48.dp
+    /**
+     * 整排菜单的行高，与 NG 的 TEXT_SELECTION_TOOLBAR_HEIGHT_DP 同值。
+     *
+     * 图标在上、标签在下竖排后，行高就是「图标 + 间隙 + 标签」的总和（20 + 2 + 12 ≈ 34dp），
+     * 52dp 给上下各留约 9dp 呼吸空间，同时仍高于 48dp 命中区下限。
+     */
+    val textMenuToolbarHeight: Dp = 52.dp
 
-    /** 菜单项左右内边距。旧值是 4dp，一排菜单项挤成一团的主因 */
-    val textMenuCellHorizontalPadding: Dp = 10.dp
+    /**
+     * 单个菜单项格子的**标准宽度**，也是横向命中区下限（§15.3 的 48dp）。
+     *
+     * 取「固定格子宽」而不是按内容自适应：自适应时标签长短不一会让每项宽窄不齐，
+     * 整排看起来比实际更臃肿（2026-11-05 反馈的「长按菜单太胖」）。
+     *
+     * 56dp 的来历：竖排后格子宽度由标签决定，`labelSmall`(11sp) 下四字标题
+     * （「网页搜索」「删除划线」）约 44dp，加左右各 4dp 内边距是 52dp，
+     * 56dp 留出余量又不浪费；NG 在 336dp 基础宽里给 5 个槽位，折算下来每格 60dp，同一量级。
+     *
+     * 一行放几格不写死：由 popup 实际可用宽度除以本值算出（见 TextActionMenu 的
+     * menuRowMetrics），窄屏 / 分屏时自动少放一格，绝不让格子被挤到 48dp 以下。
+     */
+    val textMenuCellWidth: Dp = 56.dp
 
-    /** 菜单项图标与标题之间的间隙 */
-    val textMenuCellIconGap: Dp = 6.dp
+    /** 菜单项左右内边距。竖排后主要防标签贴边，不再是横向胖瘦的决定因素 */
+    val textMenuCellHorizontalPadding: Dp = 4.dp
+
+    /**
+     * 「更多」纵向面板的最小宽度，与 NG 的 TEXT_SELECTION_MORE_PANEL_WIDTH_DP 同值。
+     *
+     * 用 widthIn(min) 而不是写死：面板里会出现系统文本处理菜单的第三方应用名
+     * （「用 XX 搜索」），写死 156dp 会把它截成省略号，min 则让它按需撑开。
+     */
+    val textMenuMorePanelWidth: Dp = 156.dp
+
+    /**
+     * 「更多」面板里每个条目的行高。
+     *
+     * NG 的 TEXT_SELECTION_MORE_ACTION_HEIGHT_DP 是 44dp，这里刻意不照抄：
+     * accessibility.md §15.3 的 48dp 命中区下限是硬规则，「紧凑不得牺牲可点击区域」。
+     * 面板里是「图标 + 标题」单行横排，48dp 与工具条 52dp 的层次差也还在。
+     */
+    val textMenuMoreItemHeight: Dp = 48.dp
+
+    /**
+     * 菜单卡片与屏幕左右边缘的最小距离。
+     *
+     * 用途不是给卡片加 padding，而是**反算一行能放几格**：popup 宽度不再由内容自适应
+     * （自适应会让 7 个可见项折成两行，即 2026-11-05 反馈的「长按菜单太胖」），
+     * 而是按「屏宽 - 两侧留白 - 卡片内边距」算出可用宽度，再除以
+     * [textMenuCellWidth] 得到槽位数，以固定宽度一次排开。
+     */
+    val textMenuScreenMargin: Dp = 8.dp
+
+    /**
+     * 「更多」面板的最大高度。
+     *
+     * 面板条目来自系统文本处理菜单，第三方应用装得越多条目越多，上不封顶；
+     * 不限高会把整张卡片顶出屏幕（popup 是 WRAP_CONTENT，超出部分直接看不见也点不到）。
+     * 取值 = 6 条 × [textMenuMoreItemHeight]，再高就交给面板内部滚动。
+     */
+    val textMenuMorePanelMaxHeight: Dp = 288.dp
+
+    /** 「更多」面板条目的左右内边距 */
+    val textMenuMoreItemHorizontalPadding: Dp = 10.dp
+
+    /** 「更多」面板条目里图标与标题的间隙。横排，所以是左右间隙 */
+    val textMenuMoreItemIconGap: Dp = 8.dp
+
+    /** 菜单项图标与标题之间的间隙（竖排，即上下间隙） */
+    val textMenuCellIconGap: Dp = 2.dp
 
     /** 菜单卡片内边距 */
     val textMenuCardPadding: Dp = 10.dp
@@ -678,4 +740,67 @@ object AppDimens {
     val highlightNoteSummaryHorizontalPadding: Dp = 10.dp
     val highlightNoteSummaryVerticalPadding: Dp = 7.dp
     val highlightNoteSummaryIconSize: Dp = 13.dp
+
+    // ── 备注预览卡（有备注的划线点开时先显示这一屏）──
+    // 对应 NG 的 TEXT_HIGHLIGHT_NOTE_PREVIEW_* 一组常量。
+    //
+    // 为什么预览卡与工具条是两个形态、而不是同屏两段：备注可能很长，
+    // 和样式条叠在一起会把卡片顶到遮住正文；先给一整块可滚动的备注区，
+    // 想看样式再点右上角进工具条，这与 NG 的 TextHighlightPopupMode 两步流一致。
+
+    /** 预览卡最小宽度（NG 176dp）。再窄时一行只放得下七八个字，读备注要不停滚动 */
+    val highlightNotePreviewMinWidth: Dp = 176.dp
+
+    /**
+     * 预览卡最小高度。
+     *
+     * 不是为文本留的——一行备注加上下内边距只有 48dp 出头，而是为右上角那个按钮留的：
+     * 按钮命中区 [highlightNotePreviewActionTouchSize] 从卡片上沿内缩
+     * [highlightNotePreviewActionInset] 起算，卡片比 52dp 还矮时按钮会溢出圆角之外。
+     */
+    val highlightNotePreviewMinHeight: Dp = 56.dp
+
+    /**
+     * 预览卡最大高度，超出部分卡片内部滚动。
+     *
+     * NG 取 `max(180dp, 可用高 × 0.4)`，这里**刻意不照抄**那个比例：本仓的菜单是
+     * WRAP_CONTENT 的 PopupWindow，比例算出来的高度要跟着窗口高、系统栏 inset 一起变，
+     * 而估宽估高发生在 `showAtLocation` 之前、拿不到那批 inset；算不准就会让卡片
+     * 在分屏 / 横屏下被压到只剩两三行。固定上界更笨但可预测：240dp 在 440dpi 的
+     * 竖屏上约占屏高 20%，长备注滚动看，短备注不占地方。
+     */
+    val highlightNotePreviewMaxHeight: Dp = 240.dp
+
+    /** 预览卡备注文本的上 / 下内边距 */
+    val highlightNotePreviewTextPaddingVertical: Dp = 14.dp
+
+    /** 预览卡备注文本的左内边距 */
+    val highlightNotePreviewTextPaddingStart: Dp = 16.dp
+
+    /**
+     * 预览卡备注文本的右内边距。
+     *
+     * 刻意远大于左边：右上角要留出「进入工具条」按钮的位置，正文若贴着右边写，
+     * 长备注的第一行会被按钮压住。取值 = 按钮命中区 [highlightNotePreviewActionTouchSize]
+     * 加按钮距右沿的内缩量，两处同源改一处即可。
+     */
+    val highlightNotePreviewTextPaddingEnd: Dp = 52.dp
+
+    /**
+     * 预览卡右上角按钮的命中区边长。
+     *
+     * NG 取 44dp，这里**刻意不照抄**：accessibility.md §15.3 的 48dp 下限是硬规则，
+     * 「追求紧凑布局时不得牺牲可点击区域」。按钮视觉尺寸仍由
+     * [highlightNotePreviewActionBadgeSize] 的圆形底板决定，只有透明命中区放大到 48dp。
+     */
+    val highlightNotePreviewActionTouchSize: Dp = 48.dp
+
+    /** 预览卡右上角按钮内层圆形底板的边长（视觉尺寸） */
+    val highlightNotePreviewActionBadgeSize: Dp = 30.dp
+
+    /** 预览卡右上角按钮图标边长 */
+    val highlightNotePreviewActionIconSize: Dp = 18.dp
+
+    /** 预览卡右上角按钮距卡片上 / 右沿的距离 */
+    val highlightNotePreviewActionInset: Dp = 2.dp
 }

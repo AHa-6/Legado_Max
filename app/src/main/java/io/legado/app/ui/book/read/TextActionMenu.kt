@@ -25,15 +25,17 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,9 +64,10 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.LifecycleOwner
@@ -83,6 +87,7 @@ import io.legado.app.data.entities.Bookmark
 import io.legado.app.help.config.AppConfig
 import io.legado.app.ui.theme.AppDimens
 import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.composeActionShape
 import io.legado.app.ui.theme.composePanelShape
 import io.legado.app.ui.theme.glassPanelBorderColor
 import io.legado.app.ui.theme.glassPanelContainerTopColor
@@ -126,20 +131,47 @@ private val MenuCardBorderWidth = AppDimens.textMenuCardBorderWidth
 private const val KEEP_SIZE = -1
 
 /**
- * 划线态菜单的估算宽度（dp），直接取 [AppDimens.highlightStyleBarWidth]。
- *
- * 用途是把菜单横向居中于点击点：popup 是 WRAP_CONTENT，showAtLocation 之前量不到实际宽度，
- * 只能估。样式条是这一形态下唯一的定宽元素，第一层菜单在默认可见项数量下
- * 与之相差不到几个 dp，所以按它估居中偏差很小；估偏了也只是略歪，
- * 后面还有 coerceIn 兜住不会跑出屏幕。
- *
- * 这里不再写第二个字面量：以前样式条宽度在 TextHighlightPanel 和这里各写一份，
- * 改宽度时漏改另一处就会让面板固定偏一半——现在两边同源。
+ * 菜单与点击位置之间留的间隙（dp），避免菜单正好压住被点的那行字
  */
-private val HIGHLIGHT_MENU_WIDTH = AppDimens.highlightStyleBarWidth
-
-/** 菜单与点击位置之间留的间隙（dp），避免菜单正好压住被点的那行字 */
 private const val highlightAnchorGap = 8
+
+/**
+ * 划线菜单的两种形态（与 NG 的 `TextHighlightPopupMode` 同名同义）。
+ *
+ * ## 为什么要点已有划线时先看备注
+ * 点开一条**带备注**的划线，用户此刻想知道的几乎都是「我上次在这儿记了什么」，
+ * 而不是「这段文字还能做什么」。直接铺工具条等于把答案藏在第二层：
+ * 得先点备注按钮、再等输入框展开，才看到自己写的那句话。
+ *
+ * 于是拆成两步：有备注先给一整卡可滚动的备注预览（[NOTE_PREVIEW]），
+ * 右上角一个按钮进工具条（[TOOLBAR]）；没有备注就跳过预览直接进工具条，
+ * 不给用户多看一眼空卡片的机会。
+ *
+ * 与 2026-11 之前那版「整卡替换」的区别在于**触发条件**：那版是任何划线都替换掉
+ * 第一层菜单，复制 / 朗读 / 搜索凭空消失；这版只在「有备注」时替换，
+ * 而且预览卡上有一个明确的出口回到全功能工具条，不是死胡同。
+ */
+internal enum class TextHighlightPopupMode {
+    /** 全功能形态：第一层动作菜单 + 划线操作区（样式 / 颜色 / 备注） */
+    TOOLBAR,
+
+    /** 备注预览形态：整卡只显示这条划线的备注，右上角按钮切回 [TOOLBAR] */
+    NOTE_PREVIEW,
+}
+
+/**
+ * 点开一条划线时该进哪种形态。
+ *
+ * 判据是备注**非空白**而不是非 null：只敲了空格的备注预览出来是一张空卡，
+ * 比直接进工具条更让人困惑。
+ */
+internal fun initialTextHighlightPopupMode(
+    textHighlight: Bookmark?
+): TextHighlightPopupMode = if (textHighlight?.content?.isNotBlank() == true) {
+    TextHighlightPopupMode.NOTE_PREVIEW
+} else {
+    TextHighlightPopupMode.TOOLBAR
+}
 
 /**
  * 文本操作菜单
@@ -218,6 +250,19 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
 
     /** 当前正在操作的划线，null 表示菜单处于普通文字选择形态 */
     private val textHighlightState = mutableStateOf<Bookmark?>(null)
+
+    /**
+     * 当前划线菜单的形态，见 [TextHighlightPopupMode]。
+     *
+     * 默认 [TextHighlightPopupMode.TOOLBAR]：普通文字选择态压根不读这个字段，
+     * 只有 `textHighlightState != null` 时它才参与渲染分支。
+     *
+     * 与其它划线态字段一样放在组合之外，理由见 [noteDraftState] 上方那段：
+     * 拖动移窗、展开「更多」都会触发重组，形态若活在 `remember` 里会被重置回默认值，
+     * 表现为「拖一下菜单，备注预览自己变回工具条」。
+     */
+    private val textHighlightPopupModeState =
+        mutableStateOf(TextHighlightPopupMode.TOOLBAR)
 
     /** 备注输入框是否展开（展开时要放行输入法，见 [setNoteEditorVisible]） */
     private val noteEditorVisibleState = mutableStateOf(false)
@@ -324,6 +369,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
             commitTextHighlightNote()
             highlightMenuGeneration++
             textHighlightState.value = null
+            textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
             noteEditorVisibleState.value = false
             noteDraftState.value = ""
             isFocusable = false
@@ -386,18 +432,140 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
             .filter { it.itemId !in hidden }
             .map { it.toMenuEntry() }
 
-        // 将菜单项分为可见项（前 N 项）和更多项（第 N 项之后）
-        val visibleCount = TextMenuConfig.getTextMenuVisibleCount(context)
-        uiState.allItems = entries
-        if (entries.size > visibleCount) {
-            uiState.visibleItems = entries.subList(0, visibleCount).toList()
-            uiState.moreItems = entries.subList(visibleCount, entries.size).toList()
+        // 一行能放下几个格子：由可用屏宽反算，不是写死的常量。
+        //
+        // popup 是 WRAP_CONTENT，旧实现让每格按内容自适应宽，7 个可见项 + 「更多」
+        // 在本机（392dp 宽）要 400dp 以上，FlowRow 只能折行——一排变两排，
+        // 这就是「长按菜单太胖」的成因。改成定宽格子后，宽度由格子数决定，
+        // 于是格子数必须反过来由屏宽决定。
+        //
+        // 两种容量都要算：不挂按钮时整行都给条目，挂按钮时得先扣掉那 48dp。
+        val capacityFullRow = measureRowCapacity(withMoreButton = false)
+        val capacityWithMore = measureRowCapacity(withMoreButton = true)
+        uiState.rowCapacity = capacityFullRow
+
+        // 将菜单项分为可见项（第一行）和更多项（纵向面板）
+        //
+        // 用户配置的可见项数量（3~10）在放得下时照旧生效；放不下时以容量为准，
+        // 多出来的自动落进「更多」。这是唯一能保证「第一行永不折行」的分法——
+        // 尊重配置而超宽，就会退回到折行那个老问题。
+        val configured = TextMenuConfig.getTextMenuVisibleCount(context)
+        val rowSlots = if (entries.size <= capacityFullRow) {
+            // 一行放得下全部条目，不必留按钮位
+            entries.size
         } else {
-            // 如果菜单项少于 N 个，全部显示在主菜单
+            // 放不下：给「更多」按钮留出格子，剩下的按配置数量放，但不超过容量
+            configured.coerceAtMost(capacityWithMore)
+        }
+        uiState.allItems = entries
+        if (entries.size > rowSlots) {
+            uiState.visibleItems = entries.subList(0, rowSlots).toList()
+            uiState.moreItems = entries.subList(rowSlots, entries.size).toList()
+        } else {
+            // 如果菜单项少于一行容量，全部显示在主菜单
             uiState.visibleItems = entries
             uiState.moreItems = emptyList()
         }
         uiState.expanded = expandTextMenu
+    }
+
+    /**
+     * 量出一行能放几个菜单格。
+     *
+     * 口径与 Compose 侧完全一致：可用宽度 = 屏宽 − 两侧屏幕留白 − 卡片左右内边距，
+     * 需要挂「更多」按钮时再扣掉按钮那一格，最后除以格子标准宽。
+     * 四处取值全部来自 [AppDimens]，不在这里写第二个字面量。
+     *
+     * @param withMoreButton 这一行是否还要留位置给「更多」按钮。必须分两种情况算：
+     *   按钮是 48dp 的独立元素，不占格子；按「格子数」一刀切会让 6 格 + 按钮 = 384dp
+     *   超出本机 356.7dp 的可用宽度，菜单右边被屏幕切掉一截。
+     *
+     * 用 `displayMetrics.widthPixels` 而不是 Compose 的 `LocalConfiguration`：
+     * 这个方法要在 [reloadMenuItems] 里被非 Composable 代码调用（popup 显示前），
+     * 而菜单是贴在竖屏阅读页上的浮层，取屏宽即可，不必跟随窗口尺寸变化实时重算。
+     */
+    private fun measureRowCapacity(withMoreButton: Boolean): Int {
+        val density = context.resources.displayMetrics.density
+        val screenWidthDp = (context.resources.displayMetrics.widthPixels / density).toDouble()
+        val moreButtonWidth =
+            if (withMoreButton) AppDimens.textMenuMoreTouchSize.value.toDouble() else 0.0
+        val usableDp = screenWidthDp -
+            (AppDimens.textMenuScreenMargin * 2).value -
+            (AppDimens.textMenuCardPadding * 2).value -
+            moreButtonWidth
+        val capacity = (usableDp / AppDimens.textMenuCellWidth.value).toInt()
+        // 下限 2：再窄也至少给出两个动作，否则菜单形同不可用
+        return capacity.coerceAtLeast(2)
+    }
+
+    /**
+     * 卡片**内容区**宽度：工具条、样式条、备注预览三段里最宽的一段。
+     *
+     * 划线态刻意把三段一起取最大值，而不是「当前显示哪段就算哪段」：
+     * 备注预览与工具条是同一张卡片的两种形态（见 [TextHighlightPopupMode]），
+     * 点右上角按钮切换时若两种形态宽度不同，WRAP_CONTENT 的 popup 会当场重新测量，
+     * 卡片宽度肉眼可见地跳一下。让预览卡直接取「工具条形态下的卡片宽」，
+     * 切换前后等宽，也就不需要像 NG 那样在切换时补一次 `update(x, y, w, h)` 重定位。
+     *
+     * 本仓 popup 全程 WRAP_CONTENT（NG 是显式设 width/height），
+     * 所以这里算出的宽度只用于两处：定位前的居中估算，以及预览卡的定宽。
+     */
+    private fun cardContentWidthDp(): Dp {
+        val toolbarWidth = toolbarWidth(
+            cellCount = if (uiState.expanded) {
+                // 展开态按容量分行，最宽的一行就是满行
+                uiState.rowCapacity
+            } else {
+                uiState.visibleItems.size
+            },
+            showMoreButton = !uiState.expanded && uiState.moreItems.isNotEmpty()
+        )
+        // 普通文字选择态只有工具条一段，直接返回。
+        // 这里不能写成 maxOf(toolbarWidth, 0.dp) 之外还去读 highlightStyleBarWidth：
+        // 无划线段时样式条压根不渲染，算进去会让菜单凭空宽 284dp、居中位置整体偏左。
+        if (textHighlightState.value == null) return toolbarWidth
+        return maxOf(
+            toolbarWidth,
+            AppDimens.highlightStyleBarWidth,
+            // 预览卡的下限：可见项被用户配到只剩 3 个时工具条只有 168dp，
+            // 一行放七八个字的备注卡太窄，读起来要一直换行
+            AppDimens.highlightNotePreviewMinWidth
+        )
+    }
+
+    /**
+     * 卡片估算宽度（dp），供 [show] / [showTextHighlight] 定位与夹回屏幕。
+     *
+     * popup 是 WRAP_CONTENT，showAtLocation 之前量不到实际宽度，只能估。
+     * 与 [cardContentWidthDp] 同源，再补上卡片左右内边距。
+     *
+     * 形态（备注预览 / 工具条）不影响这个值——两种形态等宽是 [cardContentWidthDp]
+     * 刻意保证的，所以调用方不必先判形态再估宽。
+     *
+     * 返回 [Float] 而不是 Double：`Dp.value` 本身就是 Float，两个 Float 相加还是 Float，
+     * 而 Kotlin 不做 Float → Double 的隐式加宽（`val d: Double = 1.0f` 直接编译不过）。
+     * 调用方紧接着要乘 `displayMetrics.density`（也是 Float）再 `roundToInt()`，
+     * 全程 Float 反而少一次转换。
+     */
+    private fun estimateCardWidthDp(): Float =
+        cardContentWidthDp().value + (AppDimens.textMenuCardPadding * 2).value
+
+    /**
+     * 把宽 [widthPx] 的卡片横向居中于 [anchorX]，再夹回屏幕内。
+     *
+     * 两侧各留 [AppDimens.textMenuScreenMargin] 的安全边距：贴到屏幕边缘的菜单
+     * 看着像被切了一半，而且边缘那一格的点击区正好压在系统手势区上，容易误触。
+     * 夹回的上下界同样带这个边距，与 [measureRowCapacity] 的可用宽度口径一致——
+     * 一处按「屏宽 − 两侧留白」算格子数，另一处就必须按同一留白夹位置，
+     * 否则算出来放得下、实际却被挤到屏幕外。
+     *
+     * @return 夹回屏幕后的 popup x 偏移
+     */
+    private fun centerOn(anchorX: Int, widthPx: Int, rootWidthPx: Int): Int {
+        val density = context.resources.displayMetrics.density
+        val marginPx = (AppDimens.textMenuScreenMargin.value * density).roundToInt()
+        val maxX = (rootWidthPx - widthPx - marginPx).coerceAtLeast(marginPx)
+        return (anchorX - widthPx / 2).coerceIn(marginPx, maxX)
     }
 
     /**
@@ -436,10 +604,19 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         endBottomY: Int
     ) {
         upMenu()
+        // 菜单宽度现在可估（定宽格子 × 格子数，见 estimateCardWidthDp），
+        // 于是定位不再「左边直接贴 startX」：那样选区落在屏幕右半边时菜单会有一半在屏幕外，
+        // 而旧实现因为每格按内容自适应宽、量不到宽度，只能退而求其次贴左边。
+        // 现在一律横向居中于**选区中点**再夹回屏幕，与 showTextHighlight 同一口径。
+        val density = context.resources.displayMetrics.density
+        val cardWidth = (estimateCardWidthDp() * density).roundToInt()
+        val rootWidth = view.rootView.width.takeIf { it > 0 }
+            ?: context.resources.displayMetrics.widthPixels
+        val anchoredX = centerOn((startX + endX) / 2, cardWidth, rootWidth)
         if (startTopY > 300) {
             // 上方空间充裕：菜单底部对齐选中文字顶部，向上生长，绝不遮挡
             menuAnchoredToBottom = true
-            menuOffsetX = startX
+            menuOffsetX = anchoredX
             menuOffsetY = windowHeight - startTopY
             showAtLocation(
                 view,
@@ -450,7 +627,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         } else {
             // 接近页眉：菜单紧贴选中文字起始位置下方，向下生长
             menuAnchoredToBottom = false
-            menuOffsetX = startX
+            menuOffsetX = anchoredX
             menuOffsetY = startBottomY
             showAtLocation(
                 view,
@@ -534,8 +711,11 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      * 定位策略与 [show] 同源（上方空间充裕就 `Gravity.BOTTOM` 向上生长，否则向下），
      * 差别是锚点只有一个点击位置，没有选区手柄那一套。
      *
-     * 横向刻意**居中于点击点**再夹回屏幕：菜单宽度按 [HIGHLIGHT_MENU_WIDTH] 估算，
+     * 横向刻意**居中于点击点**再夹回屏幕：菜单宽度按 [estimateCardWidthDp] 估算，
      * 若照 [show] 那样直接把 x 当左边，点在屏幕右半边时面板会有一半在屏幕外。
+     *
+     * 两种形态（备注预览 / 工具条）等宽，所以这里不必先判形态再估宽，
+     * 切形态时也不需要重设窗口位置，见 [cardContentWidthDp] 的说明。
      *
      * @param x 点击位置 X（视图坐标，与 [show] 的 startX 同口径）
      * @param y 点击位置 Y（视图坐标），面板贴着它上/下沿生长，中间留 [highlightAnchorGap] 不遮住被点的字
@@ -550,6 +730,10 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         upMenu()
         textHighlightState.value = textHighlight
         noteDraftState.value = textHighlight.content
+        // 有备注 → 先给备注预览；没备注 → 直接进工具条（见 TextHighlightPopupMode）。
+        // 必须在估宽之前赋值：cardContentWidthDp 靠 textHighlightState 判断是否处于划线态，
+        // 顺序反了会按「普通选择态」估宽，卡片居中位置整体偏左。
+        textHighlightPopupModeState.value = initialTextHighlightPopupMode(textHighlight)
         // 直接复位而不是走 setNoteEditorVisible：那一对方法要动 isFocusable，
         // 而此刻窗口还没显示，动了也白动
         noteEditorVisibleState.value = false
@@ -560,22 +744,25 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         // 注意：这里的 density 是 displayMetrics.density（Float），不是 Compose 的 Density，
         // 所以不能用 with(density) { roundToPx() }（那个扩展的 receiver 类型不对，编译不过）。
         // 换算沿用本文件 loadMenuIcon 的同一口径：令牌 .value * density。
-        // 宽度仍然取自 HIGHLIGHT_MENU_WIDTH（= AppDimens.highlightStyleBarWidth），
-        // 与 TextHighlightPanel 内样式条共用同一来源，避免两处字面量各自漂移。
-        val panelWidth = (HIGHLIGHT_MENU_WIDTH.value * density).roundToInt()
+        //
+        // 宽度取 [estimateCardWidthDp] 而不是单看样式条：划线态的卡片现在有「工具条 +
+        // 样式条」两段，第一行格子多起来时工具条会比样式条更宽，只按样式条估会让菜单偏一半。
+        // 调用前 textHighlightState 已赋值，所以这段能算进划线宽度。
+        val cardWidth = (estimateCardWidthDp() * density).roundToInt()
         val rootWidth = view.rootView.width.takeIf { it > 0 }
             ?: context.resources.displayMetrics.widthPixels
+        val anchoredX = centerOn(x, cardWidth, rootWidth)
 
         if (y > 300) {
             // 上方空间充裕：面板底边停在点击位置上方 gap 处，向上生长
             menuAnchoredToBottom = true
-            menuOffsetX = (x - panelWidth / 2).coerceIn(0, (rootWidth - panelWidth).coerceAtLeast(0))
+            menuOffsetX = anchoredX
             menuOffsetY = windowHeight - y + gap
             showAtLocation(view, Gravity.BOTTOM or Gravity.START, menuOffsetX, menuOffsetY)
         } else {
             // 贴近页眉：面板顶边停在点击位置下方 gap 处，向下生长
             menuAnchoredToBottom = false
-            menuOffsetX = (x - panelWidth / 2).coerceIn(0, (rootWidth - panelWidth).coerceAtLeast(0))
+            menuOffsetX = anchoredX
             menuOffsetY = y + gap
             showAtLocation(view, Gravity.TOP or Gravity.START, menuOffsetX, menuOffsetY)
         }
@@ -605,6 +792,34 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     }
 
     /**
+     * 从备注预览切到工具条形态。
+     *
+     * ## 为什么不需要重定位
+     * NG 在这里算了一整套目标宽高、再 `update(x, y, w, h)` 把窗口挪过去，
+     * 因为它的 popup 是显式设宽高的：两种形态尺寸不同，不重设就会把内容裁掉。
+     * 本仓 popup 全程 WRAP_CONTENT，宽度由 Compose 自己量；而两种形态的宽度
+     * 已由 [cardContentWidthDp] 保证相等，高度变化时 `Gravity.BOTTOM` 向上生长、
+     * `Gravity.TOP` 向下生长，都不需要改 x/y。所以这里只切状态，重组即可。
+     *
+     * ## 为什么要收掉「更多」面板
+     * 「更多」展开时卡片下面已经挂了一列动作面板，此时切形态会让卡片高度
+     * 从「备注预览 + 动作面板」跳到「工具条 + 动作面板」，可能超出屏幕下沿。
+     * 预览卡上根本没有「更多」按钮，能走到这里说明面板是收着的，收一次是幂等的。
+     */
+    private fun showTextHighlightToolbar() {
+        if (
+            !isShowing ||
+            textHighlightState.value == null ||
+            textHighlightPopupModeState.value != TextHighlightPopupMode.NOTE_PREVIEW
+        ) {
+            return
+        }
+        uiState.showingMore = false
+        noteEditorVisibleState.value = false
+        textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
+    }
+
+    /**
      * 删除这条划线。
      *
      * 必须**先清状态再关窗**：关窗时 [commitTextHighlightNote] 会拿 textHighlightState
@@ -612,6 +827,7 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      */
     private fun deleteTextHighlight(highlight: Bookmark) {
         textHighlightState.value = null
+        textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
         noteEditorVisibleState.value = false
         noteDraftState.value = ""
         isFocusable = false
@@ -720,6 +936,14 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         // 圆角与 XML 侧 UiCorner 同源（theme-styles.md §7.2），不在 Compose 侧另设常量
         val shape = composePanelShape()
 
+        // 备注预览卡的滚动状态在**这里**创建、传进 HighlightNotePreview：
+        // 宿主要用它的 maxValue 判断卡片能不能拖（见下面拖动手势那段）。
+        // 放在卡片内部 remember 的话宿主拿不到这个值，长备注就没法既滚动又拖动。
+        val notePreviewScrollState = rememberScrollState()
+        val isNotePreview =
+            textHighlight != null &&
+                textHighlightPopupModeState.value == TextHighlightPopupMode.NOTE_PREVIEW
+
         // 划线态的第一层条目：把「书签」槽换成「删除划线」。分页口径与 reloadMenuItems
         // 保持一致——先合并再替换再切回两页，避免两页各自补一个兜底删除项。
         val pagedEntries = remember(uiState.visibleItems, uiState.moreItems, textHighlight) {
@@ -753,8 +977,18 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 // 与 NG 一致：备注输入框展开时不挂拖动手势。IME 会把窗口顶起来，
                 // 拖动基准（dragAccum / menuOffset）在那一刻全部失效，
                 // 继续响应拖动会让菜单跟着手指乱跳。
+                //
+                // 备注预览卡**可滚动时**同样不挂：卡片内是 verticalScroll，
+                // 外层再挂 detectDragGestures 就有两个手势抢同一根手指。
+                // 理论上子节点先消费、父层 awaitTouchSlopOrCancellation 会放弃，
+                // 但那条链依赖指针消费顺序，换个 Compose 版本就可能变；
+                // 直接按「内容能不能滚」二选一更稳（NG 的 dragEnabled && maxValue == 0 同思路）。
+                // 备注短、滚不动时 maxValue 是 0，拖动手势照常放行，卡片仍然拖得走。
                 .then(
-                    if (noteEditorVisibleState.value) {
+                    if (
+                        noteEditorVisibleState.value ||
+                        (isNotePreview && notePreviewScrollState.maxValue > 0)
+                    ) {
                         Modifier
                     } else {
                         Modifier.pointerInput(Unit) {
@@ -767,28 +1001,63 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 )
                 .padding(AppDimens.textMenuCardPadding)
         ) {
+            // ── 形态一：备注预览 ──
+            // 点开的是一条**带备注**的划线时，整张卡片只显示备注，两段常规内容都不渲染。
+            // 用 return@Column 提前收尾，而不是把下面两段包进 else：包进去要给
+            // 一百多行既有代码整体加一层缩进，diff 里全是位移噪声，看不出改了什么。
+            //
+            // 宽度取 cardContentWidthDp()，即「工具条形态下的卡片内容宽」——
+            // 两种形态等宽，点右上角按钮切过去时卡片不会横向跳一下（理由见该函数注释）。
+            // 这里直接调成员函数而不是先算好再传：它读的 uiState 字段都是 Compose 状态，
+            // 在组合里调用才能把读取登记进快照，用户改了菜单项数量后宽度会跟着重算。
+            if (isNotePreview && textHighlight != null) {
+                HighlightNotePreview(
+                    note = textHighlight.content,
+                    accentColor = accentColor,
+                    contentColor = contentColor,
+                    onSettings = ::showTextHighlightToolbar,
+                    scrollState = notePreviewScrollState,
+                    modifier = Modifier.width(cardContentWidthDp()),
+                )
+                return@Column
+            }
             // ── 第一段：文字动作菜单，划线态下也照常显示 ──
             if (uiState.expanded) {
-                MenuItemFlow(allEntries, contentColor)
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (!uiState.showingMore) {
-                        MenuItemFlow(pagedEntries.first, contentColor)
-                    }
-                    if (uiState.moreItems.isNotEmpty()) {
-                        MoreButton(
-                            contentColor = contentColor,
-                            showingMore = uiState.showingMore,
-                            onToggle = { uiState.showingMore = !uiState.showingMore }
-                        )
-                    }
+                // 展开态：全部条目按容量切行，每行都是等宽格子，行与行之间对齐
+                val rows = allEntries.chunked(uiState.rowCapacity.coerceAtLeast(1))
+                rows.forEach { rowEntries ->
+                    MenuToolbar(
+                        entries = rowEntries,
+                        contentColor = contentColor,
+                        showMoreButton = false
+                    )
                 }
+            } else {
+                // 展开「更多」时第一行**保留**：NG 的做法是工具条常驻、动作列表追加在下方。
+                // 旧实现把第一行整排换成一个返回箭头，卡片宽度当场从 300dp 掉到 48dp，
+                // 再回到面板宽度——宽度两次跳变，看着像菜单在自己抽搐。
+                MenuToolbar(
+                    entries = pagedEntries.first,
+                    contentColor = contentColor,
+                    showMoreButton = uiState.moreItems.isNotEmpty(),
+                    showingMore = uiState.showingMore,
+                    onToggleMore = { uiState.showingMore = !uiState.showingMore }
+                )
                 if (uiState.showingMore) {
-                    Column {
-                        pagedEntries.second.forEach { entry ->
-                            MenuItemCell(entry, contentColor)
-                        }
-                    }
+                    // 面板宽度对齐工具条：卡片宽度在展开前后完全一致，
+                    // popup 是 WRAP_CONTENT，宽度不变也就不会触发窗口重新定位
+                    val panelWidth = maxOf(
+                        toolbarWidth(
+                            cellCount = pagedEntries.first.size,
+                            showMoreButton = uiState.moreItems.isNotEmpty()
+                        ),
+                        AppDimens.textMenuMorePanelWidth
+                    )
+                    MorePanel(
+                        entries = pagedEntries.second,
+                        contentColor = contentColor,
+                        width = panelWidth
+                    )
                 }
             }
             // ── 第二段：划线操作区，只在高亮态追加，宽度与样式条对齐 ──
@@ -845,49 +1114,99 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         }
     }
 
-    /** 横向换行铺开菜单项，顶替旧的 FlexboxLayoutManager(row + wrap) */
-    @OptIn(ExperimentalLayoutApi::class)
+    /**
+     * 工具条一行的实际宽度：格子数 × 格子宽，挂「更多」按钮时再加一格。
+     *
+     * 与 [estimateCardWidthDp] 共用同一批令牌，两处算出来的宽度必须一致——
+     * 一处用于「更多」面板的最小宽度，一处用于 popup 居中估算，
+     * 口径漂移会让面板与工具条不等宽、卡片宽度在展开瞬间跳一下。
+     */
+    private fun toolbarWidth(cellCount: Int, showMoreButton: Boolean): Dp {
+        val cells = cellCount * AppDimens.textMenuCellWidth
+        return if (showMoreButton) cells + AppDimens.textMenuMoreTouchSize else cells
+    }
+
+    /**
+     * 一行工具条：等宽格子横向排开，右侧可挂「更多」按钮。
+     *
+     * ## 为什么行高写死、格子定宽
+     * 旧实现是 `FlowRow` + 每格按内容自适应宽：标签长短不一让每项宽窄不齐，
+     * 7 个可见项加「更多」在本机（392dp 宽）要 400dp 以上，于是折成两行——
+     * 这就是 2026-11-05 反馈的「长按菜单太胖」。
+     *
+     * 现在改成 NG 的做法：行高固定 [AppDimens.textMenuToolbarHeight]（52dp），
+     * 每格固定 [AppDimens.textMenuCellWidth]（56dp），一行放几格由屏宽反算
+     * （见 [measureRowCapacity]），第一行永不折行。
+     *
+     * 行高 52dp 是「图标 20 + 间隙 2 + `labelSmall` 标签 ≈ 12」再加上下呼吸空间，
+     * 同时高于 §15.3 的 48dp 命中区下限——紧凑不以牺牲可点击区域为代价。
+     */
     @Composable
-    private fun MenuItemFlow(items: List<MenuEntry>, contentColor: Color) {
-        FlowRow {
-            items.forEach { entry ->
-                MenuItemCell(entry, contentColor)
+    private fun MenuToolbar(
+        modifier: Modifier = Modifier,
+        entries: List<MenuEntry>,
+        contentColor: Color,
+        showMoreButton: Boolean,
+        showingMore: Boolean = false,
+        onToggleMore: () -> Unit = {},
+    ) {
+        if (entries.isEmpty() && !showMoreButton) return
+        Row(
+            modifier = modifier.height(AppDimens.textMenuToolbarHeight),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            entries.forEach { entry ->
+                MenuItemCell(entry = entry, contentColor = contentColor)
+            }
+            if (showMoreButton) {
+                MoreButton(
+                    contentColor = contentColor,
+                    showingMore = showingMore,
+                    onToggle = onToggleMore
+                )
             }
         }
     }
 
     /**
-     * 单个菜单项：可选图标 + 标题。
+     * 单个菜单项：图标在上、标签在下，占一个等宽格子。
+     *
+     * 竖排而不是横排是这次瘦身的关键：横排时格子宽 = 图标 20 + 间隙 + 标签宽，
+     * 「网页搜索」这类四字标签能占掉 60dp 以上；竖排后宽度只由标签决定，
+     * 同样四个字收进 56dp，图标还从 18dp 放大到 20dp。
      *
      * 点击与长按都走 [combinedClickable]，指示层用 [ripple]——按下态由绘制层接管，
      * 不依赖一次重组（快速点击时按下/抬起落在同一帧，自带底色方案看不到反馈）。
+     * 圆角取 [composeActionShape]（与 XML 侧 UiCorner 同源），让按下波纹跟着格子圆角裁切。
      *
-     * ## 密度（第 4 项）
-     * 旧实现是「18dp 图标 + `padding(horizontal = 4.dp)`」，行高由文字自然撑开，
-     * 一排五六个菜单项看起来像一条连体按钮带。现在三处一起改：
-     * - 单元格最小高度 48dp（accessibility.md §15.3 硬规则，旧值约 26dp）；
-     * - 左右内边距 4dp → 10dp，相邻两项之间因此有 20dp 呼吸空间；
-     * - 图标与标题之间补 6dp 间隙，旧实现两者紧贴。
-     * 行高变大后菜单自然「加长」（第 5 项），不必额外加空白。
-     *
-     * 字号取 typography.bodyMedium（14sp）而不是裸 `14.sp`：§7.4 要求所有字号走档位，
-     * 这样字号跟随用户的字体缩放与全局排版配置。
+     * 标签字号取 `typography.labelSmall`（11sp，与 NG 同值）而不是裸 `11.sp`：
+     * §7.4 要求所有字号走档位，这样字号跟随用户的字体缩放与全局排版配置，
+     * 也让 [AppDimens] 保持「只定义 dp」的契约。
      */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun MenuItemCell(entry: MenuEntry, contentColor: Color) {
+    private fun MenuItemCell(
+        modifier: Modifier = Modifier,
+        entry: MenuEntry,
+        contentColor: Color,
+    ) {
         val interactionSource = remember { MutableInteractionSource() }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .heightIn(min = AppDimens.textMenuCellMinTouchSize)
+        val cellShape = composeActionShape()
+        Column(
+            modifier = modifier
+                .width(AppDimens.textMenuCellWidth)
+                .fillMaxHeight()
+                .clip(cellShape)
                 .combinedClickable(
                     interactionSource = interactionSource,
                     indication = ripple(color = contentColor.copy(alpha = 0.12f)),
+                    role = Role.Button,
                     onClick = { onEntryClick(entry) },
                     onLongClick = { toggleSpeakMode() }
                 )
-                .padding(horizontal = AppDimens.textMenuCellHorizontalPadding)
+                .padding(horizontal = AppDimens.textMenuCellHorizontalPadding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
             val iconModifier = Modifier.size(AppDimens.textMenuIconSize)
             when {
@@ -904,14 +1223,14 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                     modifier = iconModifier
                 )
             }
-            if (entry.iconResId != null || entry.iconBitmap != null) {
-                Spacer(Modifier.width(AppDimens.textMenuCellIconGap))
-            }
+            Spacer(Modifier.height(AppDimens.textMenuCellIconGap))
             Text(
                 text = entry.title,
                 color = contentColor,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
+                // 标签不换行：格子宽度是固定的，折行会把 52dp 的行撑破
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -920,23 +1239,32 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
     /**
      * 「更多 / 返回」按钮，顶替 iv_menu_more 的 setImageResource 切换。
      *
-     * 旧实现是「24dp 图标本身就是点击区」，远低于 accessibility.md §15.3 的 48dp 下限，
-     * 在这一排 48dp 高的菜单项旁边也小得突兀。现在改成 48dp 命中区套 22dp 图标，
-     * 图标视觉大小基本不变，但手指能按到的范围翻倍。
+     * 旧实现是「24dp 图标本身就是点击区」，远低于 accessibility.md §15.3 的 48dp 下限。
+     * 现在宽度取 [AppDimens.textMenuMoreTouchSize]（48dp）、高度撑满工具条（52dp），
+     * 图标 22dp 视觉大小基本不变，手指能按到的范围翻倍。
      */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun MoreButton(contentColor: Color, showingMore: Boolean, onToggle: () -> Unit) {
+    private fun MoreButton(
+        modifier: Modifier = Modifier,
+        contentColor: Color,
+        showingMore: Boolean,
+        onToggle: () -> Unit,
+    ) {
         val interactionSource = remember { MutableInteractionSource() }
         val description = stringResource(R.string.more_menu)
+        val buttonShape = composeActionShape()
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(AppDimens.textMenuMoreTouchSize)
+            modifier = modifier
+                .width(AppDimens.textMenuMoreTouchSize)
+                .fillMaxHeight()
+                .clip(buttonShape)
                 .combinedClickable(
                     interactionSource = interactionSource,
                     // 对应旧布局的 ?attr/selectableItemBackgroundBorderless
                     indication = ripple(bounded = false, color = contentColor.copy(alpha = 0.12f)),
+                    role = Role.Button,
                     onClick = onToggle,
                     onLongClick = null
                 )
@@ -949,6 +1277,95 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 colorFilter = ColorFilter.tint(contentColor),
                 modifier = Modifier.size(AppDimens.textMenuMoreIconSize)
             )
+        }
+    }
+
+    /**
+     * 「更多」纵向面板：图标 + 标题横排，一行一条。
+     *
+     * 面板保持横排而不是跟着工具条竖排：这里的条目含系统文本处理菜单的第三方应用名
+     * （「用 XX 搜索」），竖排 56dp 格子会把它们全截成省略号，横排才有地方放全称。
+     *
+     * @param width 面板宽度，调用处取「工具条宽度」与 [AppDimens.textMenuMorePanelWidth]
+     *   的较大者——两者同源才能让卡片宽度在展开前后不跳变。
+     *
+     * 条目数上不封顶（系统菜单能塞进十几条），所以给最大高度并允许内部滚动，
+     * 免得面板把整张卡片顶出屏幕。
+     */
+    @Composable
+    private fun MorePanel(
+        modifier: Modifier = Modifier,
+        entries: List<MenuEntry>,
+        contentColor: Color,
+        width: Dp,
+    ) {
+        Column(
+            modifier = modifier
+                .width(width)
+                .heightIn(max = AppDimens.textMenuMorePanelMaxHeight)
+                .verticalScroll(rememberScrollState())
+        ) {
+            // 分隔线把「第一行动作」和「更多动作」切开，与划线段的分隔线同一手法
+            HorizontalDivider(
+                thickness = AppDimens.textMenuCardBorderWidth,
+                color = contentColor.copy(alpha = 0.10f),
+            )
+            entries.forEach { entry ->
+                MoreActionItem(entry = entry, contentColor = contentColor)
+            }
+        }
+    }
+
+    /** 「更多」面板里的单条：图标 + 标题，48dp 行高（§15.3 下限，不取 NG 的 44dp） */
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    private fun MoreActionItem(
+        modifier: Modifier = Modifier,
+        entry: MenuEntry,
+        contentColor: Color,
+    ) {
+        val interactionSource = remember { MutableInteractionSource() }
+        val itemShape = composeActionShape()
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(AppDimens.textMenuMoreItemHeight)
+                .clip(itemShape)
+                .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = ripple(color = contentColor.copy(alpha = 0.12f)),
+                    role = Role.Button,
+                    onClick = { onEntryClick(entry) },
+                    onLongClick = { toggleSpeakMode() }
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Spacer(Modifier.width(AppDimens.textMenuMoreItemHorizontalPadding))
+            val iconModifier = Modifier.size(AppDimens.textMenuIconSize)
+            when {
+                entry.iconResId != null -> Image(
+                    painter = painterResource(entry.iconResId),
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(contentColor),
+                    modifier = iconModifier
+                )
+
+                entry.iconBitmap != null -> Image(
+                    bitmap = entry.iconBitmap,
+                    contentDescription = null,
+                    modifier = iconModifier
+                )
+            }
+            Spacer(Modifier.width(AppDimens.textMenuMoreItemIconGap))
+            Text(
+                text = entry.title,
+                modifier = Modifier.weight(1f),
+                color = contentColor,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(AppDimens.textMenuMoreItemHorizontalPadding))
         }
     }
 
@@ -1014,6 +1431,13 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                 }
                 textHighlightState.value = created
                 noteDraftState.value = created.content
+                // 刚划出来的划线**不进备注预览**，哪怕 created.content 非空
+                // （宿主可能把同一位置已有的书签并进来）。用户刚点的是「划线」，
+                // 期待看到的是样式 / 颜色 / 备注这一排工具条；这时换成一张备注卡，
+                // 等于把他刚做的操作结果藏起来，还得再点一下才回到工具条。
+                // 显式赋值而不是依赖默认值：showTextHighlight 会把模式设成 NOTE_PREVIEW，
+                // 若某条路径漏了复位，这里就是最后一道兜底。
+                textHighlightPopupModeState.value = TextHighlightPopupMode.TOOLBAR
                 // 备注输入框保持收起：刚存下来的划线通常没有备注，
                 // 直接弹键盘会挡住用户刚划的那段字
                 noteEditorVisibleState.value = false
@@ -1230,6 +1654,14 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
 
         /** 当前是否停在「更多」页 */
         var showingMore by mutableStateOf(false)
+
+        /**
+         * 一行能放几个格子，由 [measureRowCapacity] 按屏宽算出。
+         *
+         * 展开态分行、以及 [estimateCardWidthDp] 估宽都以它为准，
+         * 所以放在状态里而不是每次现算：三处口径必须同源。
+         */
+        var rowCapacity by mutableIntStateOf(6)
     }
 
     /**

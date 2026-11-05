@@ -865,6 +865,7 @@
     <string name="rule_replace_regex">替換規則 (replaceRegex)</string>
     <string name="group_name">分組名稱</string>
     <string name="note_content">備註內容</string>
+    <string name="highlight_settings">劃線設定</string>
     <string name="replace_enable_default_t">默認啟用替換淨化</string>
     <string name="replace_enable_default_s">新加入書架的書是否啟用替換淨化</string>
     <string name="select_restore_file">選擇恢復文件</string>

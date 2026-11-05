@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.read
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
@@ -103,6 +105,7 @@ internal val HighlightNoteEditorGap = AppDimens.highlightNoteEditorGap
  */
 @Composable
 internal fun HighlightStyleBar(
+    modifier: Modifier = Modifier,
     highlight: Bookmark,
     noteEditorVisible: Boolean,
     noteDraft: String,
@@ -111,7 +114,6 @@ internal fun HighlightStyleBar(
     onNoteEditorVisibleChange: (Boolean) -> Unit,
     onStyleChange: (Int) -> Unit,
     onColorChange: (Int) -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     val highlightColor = Color(highlight.highlightColor)
     Row(
@@ -186,6 +188,110 @@ internal fun HighlightStyleBar(
 }
 
 /**
+ * 备注预览卡：点开一条**带备注**的划线时，整张菜单卡片就是这一屏。
+ *
+ * 对应 NG 的 `TextHighlightNotePreview`。与 [HighlightNoteSummary] 的分工是：
+ * 摘要行是工具条形态下的「顺便看一眼」，最多三行、超出省略号；
+ * 预览卡是「先看备注」这一独立形态，把备注完整摊开，长备注内部滚动。
+ *
+ * ## 右上角那颗按钮是唯一的出口
+ * 预览形态下第一层动作菜单（复制 / 朗读 / 搜索）全都不渲染，
+ * 所以这颗「划线设置」按钮必须始终可见、可点，否则用户会卡在一张只有文字的卡片上
+ * 出不来。它的命中区取 48dp（§15.3 下限），比 NG 的 44dp 大一点，
+ * 视觉尺寸仍由 [AppDimens.highlightNotePreviewActionBadgeSize] 的圆形底板决定。
+ *
+ * ## 为什么正文右侧留出 52dp
+ * 给这颗按钮让位。备注文本是**可滚动**的，若不留这条固定沟槽，
+ * 长备注滚到第一行时文字会从按钮底下穿过去，两层内容叠在一起读不清。
+ * 该值与按钮命中区同源，见 [AppDimens.highlightNotePreviewTextPaddingEnd]。
+ *
+ * @param scrollState 滚动状态由**宿主**持有并传入：宿主还要靠它的 `maxValue`
+ *   决定卡片能不能拖动（见 [TextActionMenu.TextActionMenuContent] 的拖动手势注释）。
+ *   在这里自己 `rememberScrollState()` 的话宿主拿不到，只能无条件放行拖动，
+ *   于是滚长备注时卡片会跟着手指一起飞。
+ */
+@Composable
+internal fun HighlightNotePreview(
+    modifier: Modifier = Modifier,
+    note: String,
+    accentColor: Color,
+    contentColor: Color,
+    scrollState: ScrollState,
+    onSettings: () -> Unit,
+) {
+    val description = stringResource(R.string.highlight_settings)
+    // 最小高挂在**外层 Box** 而不是里面那个 Text 上。
+    //
+    // 关键区别：verticalScroll 只按 maxHeight 裁剪内容，不理会约束里的 minHeight
+    // （它把子节点按无限高测量、再用 coerceAtMost(max) 报自己的高度）。
+    // 所以 min 若挂在 Text 上会被滚动修饰符吃掉，备注只有一行时卡片就只剩
+    // 一行文字那么高，右上角 48dp 的按钮直接溢出圆角。
+    // Box 则会把自身尺寸 constrain 到传入约束上，min 才真正落地。
+    Box(
+        modifier = modifier.heightIn(min = AppDimens.highlightNotePreviewMinHeight),
+    ) {
+        Text(
+            text = note.trim(),
+            modifier = Modifier
+                .fillMaxWidth()
+                // 这里只留**上界**：超过它由 verticalScroll 内部滚动。
+                // 上界必须写在 verticalScroll 之前——滚动修饰符只认 max，
+                // 写在它之后等于给已经裁好的视口再加一道约束，没意义。
+                .heightIn(max = AppDimens.highlightNotePreviewMaxHeight)
+                // 内边距放在 verticalScroll 之前：留出一圈固定边框，
+                // 文字只在这圈框内滚动，不会贴着卡片边缘滑进滑出
+                .padding(
+                    start = AppDimens.highlightNotePreviewTextPaddingStart,
+                    top = AppDimens.highlightNotePreviewTextPaddingVertical,
+                    end = AppDimens.highlightNotePreviewTextPaddingEnd,
+                    bottom = AppDimens.highlightNotePreviewTextPaddingVertical,
+                )
+                .verticalScroll(scrollState),
+            color = contentColor.copy(alpha = 0.92f),
+            // 字号走 typography 档位（§7.4），行高单独给 21sp：
+            // NG 在这张卡上用 15sp/21sp，本仓取 bodyMedium（14sp）配同一行高，
+            // 阅读密度与 NG 相当，同时与备注输入框、摘要行共用一个字号档位，
+            // 备注在三处出现时字号一致，不会看着像三种不同的文本。
+            style = MaterialTheme.typography.bodyMedium,
+            lineHeight = 21.sp,
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(
+                    top = AppDimens.highlightNotePreviewActionInset,
+                    end = AppDimens.highlightNotePreviewActionInset,
+                )
+                .size(AppDimens.highlightNotePreviewActionTouchSize)
+                .clip(CircleShape)
+                .clickable(
+                    role = Role.Button,
+                    onClickLabel = description,
+                    onClick = onSettings,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            // 内层圆形底板：给按钮一个看得见的边界，
+            // 否则 18dp 的齿轮浮在一段文字上，不像能点的东西
+            Box(
+                modifier = Modifier
+                    .size(AppDimens.highlightNotePreviewActionBadgeSize)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_settings),
+                    contentDescription = description,
+                    modifier = Modifier.size(AppDimens.highlightNotePreviewActionIconSize),
+                    tint = accentColor,
+                )
+            }
+        }
+    }
+}
+
+/**
  * 已有备注时的摘要行。
  *
  * 旧实现用「备注预览态」把整张卡片换成一段备注文本，代价是第一层菜单不见了。
@@ -194,11 +300,11 @@ internal fun HighlightStyleBar(
  */
 @Composable
 internal fun HighlightNoteSummary(
+    modifier: Modifier = Modifier,
     note: String,
     accentColor: Color,
     contentColor: Color,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
@@ -267,12 +373,12 @@ internal fun HighlightNoteSummary(
  */
 @Composable
 internal fun HighlightNoteEditor(
+    modifier: Modifier = Modifier,
     value: String,
     onValueChange: (String) -> Unit,
     onDone: () -> Unit,
     accentColor: Color,
     contentColor: Color,
-    modifier: Modifier = Modifier,
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current

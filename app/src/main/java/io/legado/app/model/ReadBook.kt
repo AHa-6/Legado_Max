@@ -936,26 +936,46 @@ object ReadBook : CoroutineScope by MainScope() {
             )
             when (val offset = chapter.index - durChapterIndex) {
                 0 -> curChapterLoadingLock.withLock {
-                    withContext(Main) {
-                        ensureActive()
-                        curTextChapter = textChapter
-                    }
-                    callBack?.upMenuView()
+                    // 换章推迟到「目标页已经排出来」那一刻：新 TextChapter 刚建好时一页都没有，
+                    // 这时若已经把它赋给 curTextChapter，TextPageFactory.curPage 取不到页，
+                    // 会退化成只有标题的占位页——屏幕上就是先白一下再出字。
+                    // 2026-11-05 反馈的「改划线颜色后文字闪一下」正是这条路径：
+                    // 高亮样式在排版期并入 charStyles，改色必须整章重排，重排期间旧内容被提前换掉。
+                    //
+                    // 改成先挂着旧章、等新章目标页就绪再一次性切换，画面只有颜色变化、没有空白帧。
+                    // 划线样式不含字体/字距/行距（见 mergeBookmarkStyles 的说明），
+                    // 重排前后的分页与行位置完全一致，切换瞬间不会跳动。
                     var available = false
                     for (page in textChapter.layoutChannel) {
                         val index = page.index
                         if (!available && page.containPos(durChapterPos)) {
+                            available = true
+                            withContext(Main) {
+                                ensureActive()
+                                curTextChapter = textChapter
+                            }
+                            callBack?.upMenuView()
                             if (upContent) {
                                 callBack?.upContent(offset, resetPageOffset)
                             }
-                            available = true
                         }
-                        if (upContent && isScroll) {
+                        // 滚动模式的增量刷新也只在换章之后做：换章前 pageFactory 读的还是旧章，
+                        // 重画一遍旧内容纯属白干，而且会把旧页反复重新录制
+                        if (upContent && isScroll && available) {
                             if (max(index - ReadConstants.SCROLL_PAGE_UPDATE_THRESHOLD, 0) < durPageIndex) {
                                 callBack?.upContent(offset, false)
                             }
                         }
                         callBack?.onLayoutPageCompleted(index, page)
+                    }
+                    // 兜底：目标页始终没出现（章节变短、durChapterPos 越界、懒加载未就绪）也必须换章，
+                    // 否则会一直停在旧章上，新内容永远显示不出来
+                    if (!available) {
+                        withContext(Main) {
+                            ensureActive()
+                            curTextChapter = textChapter
+                        }
+                        callBack?.upMenuView()
                     }
                     if (upContent) callBack?.upContent(offset, !available && resetPageOffset)
                     curPageChanged()

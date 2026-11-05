@@ -31,6 +31,12 @@ class BookmarkDialog() : BaseComposeDialogFragment() {
         }
     }
 
+    /**
+     * 书签弹窗有「原文」「备注」两个输入框，必须走单窗口承载。
+     * 详见 [BaseComposeDialogFragment.rendersInOwnWindow]。
+     */
+    override val rendersInOwnWindow: Boolean = true
+
     private var bookmark: Bookmark? = null
     private var isEditing = false
 
@@ -59,6 +65,7 @@ class BookmarkDialog() : BaseComposeDialogFragment() {
             onCancel = { dismiss() },
             onConfirm = ::saveBookmark,
             onDelete = ::deleteBookmark,
+            ownWindow = rendersInOwnWindow,
         )
     }
 

@@ -870,6 +870,7 @@
     <string name="read_config">閱讀介面設定</string>
     <string name="group_name">分組名稱</string>
     <string name="note_content">備註內容</string>
+    <string name="highlight_settings">劃線設定</string>
     <string name="replace_enable_default_t">預設啟用取代淨化</string>
     <string name="replace_enable_default_s">新加入書架的書是否啟用取代淨化</string>
     <string name="select_restore_file">選擇復原文件</string>

@@ -470,32 +470,66 @@ class TitleBar @JvmOverloads constructor(
     }
 
     override fun setBackgroundColor(color: Int) {
-        if (color.alpha < 255) {
-            //这里不能改为0f,改为0f在横屏模式下文字和图标颜色会变
-            elevation = 0.1f
-        }
         val card = compactCard
         if (card == null) {
-            super.setBackgroundColor(color)
-        } else {
-            card.setBackgroundColor(color)
-        }
-    }
-
-    override fun setBackground(background: Drawable?) {
-        if (background is ColorDrawable) {
-            if (background.alpha < 255) {
+            if (color.alpha < 255) {
                 //这里不能改为0f,改为0f在横屏模式下文字和图标颜色会变
                 elevation = 0.1f
             }
+            super.setBackgroundColor(color)
+            return
         }
-        val card = compactCard
-        if (card == null) {
-            super.setBackground(background)
-        } else {
-            card.background = background
+        // 紧凑形态下「顶栏全透明」等于把卡片抹掉：卡片是这一形态唯一的可见实体，
+        // 透明 + 0 阴影会让人看不出顶栏改过（2026-11-05 反馈的「订阅源顶栏无变化」，
+        // 设备侧 transparentNavBar=true 时 applyTopBarConfig 正是走这条透明分支）。
+        // 悬浮卡片是按布局 opt-in 的形态，这里给它兜一个不依赖顶栏配色管线的承载面。
+        val resolved = if (color.alpha == 0) compactFallbackColor() else color
+        card.setBackgroundColor(resolved)
+        if (resolved.alpha == 0) {
+            elevation = 0.1f
+        } else if (color.alpha == 0) {
+            // 兜底色是不透明的，按常规顶栏给阴影，卡片才浮得起来
+            elevation = context.elevation
+        } else if (color.alpha < 255) {
+            //这里不能改为0f,改为0f在横屏模式下文字和图标颜色会变
+            elevation = 0.1f
         }
     }
+    override fun setBackground(background: Drawable?) {
+        val card = compactCard
+        if (card == null) {
+            if (background is ColorDrawable && background.alpha < 255) {
+                //这里不能改为0f,改为0f在横屏模式下文字和图标颜色会变
+                elevation = 0.1f
+            }
+            super.setBackground(background)
+            return
+        }
+        // 与 setBackgroundColor 同一条兜底：全透明的 ColorDrawable 换成卡片承载面
+        val resolved = if (background is ColorDrawable && background.alpha == 0) {
+            ColorDrawable(compactFallbackColor())
+        } else {
+            background
+        }
+        if (resolved is ColorDrawable && resolved.alpha < 255) {
+            //这里不能改为0f,改为0f在横屏模式下文字和图标颜色会变
+            elevation = 0.1f
+        }
+        card.background = resolved
+    }
+
+    /**
+     * 紧凑卡片的兜底承载面。
+     *
+     * 取 `@color/background_card`（昼 md_grey_100 / 夜 md_grey_850）而不是主题 surface：
+     * 与阅读页长按菜单卡片同源（见 [io.legado.app.ui.book.read.TextActionMenu] 的取色注释），
+     * 两处悬浮卡片因此昼夜同色。
+     *
+     * 换色后 [topBarContentColor] 会自动跟着走——它读的是 `background.resolveSolidColor()`，
+     * 拿到的正是这块兜底色，标题与图标的深浅因此仍然与卡面对比正确，不需要额外分支。
+     */
+    private fun compactFallbackColor(): Int =
+        ContextCompat.getColor(context, R.color.background_card)
 
     /** 同 [setBackground]：紧凑形态下底色在卡片层，资源 id 也要落到卡片上 */
     override fun setBackgroundResource(@DrawableRes resid: Int) {
