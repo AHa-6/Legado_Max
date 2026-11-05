@@ -52,22 +52,36 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Check Commit Messages
-        # 校验本次提交是否符合 Conventional Commits（本地 commit-msg 钩子的 CI 兜底）
+        # 校验提交信息是否符合 Conventional Commits（本地 commit-msg 钩子的 CI 兜底）。
         #
-        # 必须同时确认 origin/main 存在**且与 HEAD 有共同祖先**：
-        # compose-rework 分支是本地 git init 出来的孤立历史，与 main 无 merge-base，
-        # commitlint 会抛 "Cannot find merge-base between 'origin/main' and 'HEAD'"
-        # 并以退出码 1 终止，导致后面的编译/lint 步骤全部被跳过。
-        # 这里探测不到共同祖先就跳过消息校验，让流程继续走到真正的编译检查。
+        # ## 为什么只校验本次 push 新增的提交
+        # 原先用 `--from origin/main` 做全量校验，但 origin/main 是过期引用：
+        # compose-rework 上有 7 条早于 commit-msg 钩子的提交永远无法通过
+        # （release: / backup: / baseline: 三个类型不在 type-enum 里，
+        # 另有 3 条中文裸标题完全没有类型前缀）。全量校验因此**必然失败**，
+        # 而失败会让后面第 9~12 步（编译检查、spotless、Android Lint、帮助文档校验）
+        # 全部 skipped——2026-11 的 8 次运行全是这个死法，CI 从未真正编译过一次代码。
+        #
+        # 这 7 条旧提交不改写：其中 da2df3a3 / cd302c08 被 release-3.26.110120 等
+        # tag 指着，改写会让 tag 脱离分支，代价远大于收益。
+        #
+        # 改用 github.event.before（本次 push 之前的分支尖端）作为起点，
+        # 这样既有真实信号（新提交不合规会被点名），又不会被历史提交永久拖红。
+        #
+        # ## 为什么 continue-on-error
+        # 提交信息是书写习惯问题，不影响产物正确性，不该挡住编译检查。
+        # 与下面 spotless 的处理保持一致：只警示，不阻塞。
+        continue-on-error: true
         run: |
-          if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-            echo "origin/main 不存在，跳过 commitlint 校验"
-          elif ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
-            echo "origin/main 与 HEAD 无共同祖先（孤立历史），跳过 commitlint 校验"
-            echo "本次改为只校验最近一条提交消息："
-            git log -1 --format=%B | npx --no -- commitlint || echo "（最近一条提交未通过规范校验，仅提示不阻塞）"
+          BEFORE="${{ github.event.before }}"
+          if git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1; then
+            echo "== 校验本次推送新增的提交：$BEFORE..HEAD"
+            git log --oneline "$BEFORE"..HEAD | cat
+            npx --no -- commitlint --from "$BEFORE" --to HEAD
           else
-            npx --no -- commitlint --from origin/main --to HEAD
+            # 首次推送、强制推送（before 为全 0）或 rebase 后拿不到起点，退回只校验最新一条
+            echo "== 无法确定推送起点，只校验最近一条提交"
+            git log -1 --format=%B | npx --no -- commitlint
           fi
 
       - name: Run Compile Check
