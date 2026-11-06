@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -100,6 +101,23 @@ private val BookInfoHorizontalPadding: Dp = 16.dp
 
 /** 可点标签的最小高度：§15.3 硬下限 */
 private val BookInfoTagMinHeight: Dp = 48.dp
+
+/**
+ * 头部区的文字颜色。
+ *
+ * 头部叠在 `bg_book`（模糊封面）与 `vw_bg`（固定 `#50000000` 遮罩）之上，那层遮罩不随主题
+ * 变浅变深，于是头部实际底色永远是暗的 —— 原 XML 因此把 `tv_name` 硬编码成 `@color/white`、
+ * 把 `TitleBar` 设成 `themeMode="dark"`。若这里改用 `colorScheme.onBackground`，浅色主题下会
+ * 变成深色字压在暗底图上，直接不可读。
+ *
+ * md3 能安全使用主题色，是因为它的头部自己画了一层 `surface` 垂直渐变（`BookInfoBackdrop`），
+ * 等效于把头部底色改回不透明。max 的模糊底图是详情页的既有观感，不该为了配色而抹掉，
+ * 故这里与 md3 走相反方向：保留底图，把头部文字固定为浅色。
+ */
+private val BookInfoOnBackdrop: Color = Color.White
+
+/** 头部区的次要文字色：白字降透明度，与 `@color/tv_text_summary` 在白底上的层级关系对位 */
+private val BookInfoOnBackdropSecondary: Color = Color.White.copy(alpha = 0.76f)
 
 /**
  * 详情页 UI 状态载体。
@@ -235,7 +253,7 @@ fun BookInfoHeader(
                     text = state.name,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground,
+                    color = BookInfoOnBackdrop,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -254,7 +272,7 @@ fun BookInfoHeader(
                 Text(
                     text = authorText,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = BookInfoOnBackdropSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -270,11 +288,13 @@ fun BookInfoHeader(
                             contentDescription = authorText
                         },
                 )
-                // 所属书源：md3 用 primary 色 + labelMedium，点击看书源，观感上比正文明显是「可点」
+                // 所属书源：md3 用 primary 色 + labelMedium 表达「可点」。这里不跟 primary：
+                // 头部底色是暗的模糊封面，浅色主题下 primary 是深色饱和色，压在暗底上对比度不足。
+                // 可点性改由水波纹与无障碍 role=Button 承担，颜色仍走头部浅色文字档位。
                 Text(
                     text = originText,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = BookInfoOnBackdropSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -349,7 +369,9 @@ private fun BookInfoReadTimeLine(
     Text(
         text = text,
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // 这一行渲染在头部（暗底模糊封面）内，不能跟 onSurfaceVariant：浅色主题下它是深灰，
+        // 压在暗底上几乎看不见
+        color = BookInfoOnBackdropSecondary,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = modifier

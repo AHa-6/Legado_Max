@@ -1122,7 +1122,9 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
      * 口径漂移会让面板与工具条不等宽、卡片宽度在展开瞬间跳一下。
      */
     private fun toolbarWidth(cellCount: Int, showMoreButton: Boolean): Dp {
-        val cells = cellCount * AppDimens.textMenuCellWidth
+        // 顺序不能写反：Compose 只定义了 Dp.times(Int)，没有 Int.times(Dp)，
+        // 写成 cellCount * AppDimens.textMenuCellWidth 会解析不到重载而编译失败
+        val cells = AppDimens.textMenuCellWidth * cellCount
         return if (showMoreButton) cells + AppDimens.textMenuMoreTouchSize else cells
     }
 
