@@ -1,6 +1,8 @@
 package io.legado.app.ui.book.info
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -130,6 +133,11 @@ data class BookInfoUiState(
     val showReadRecord: Boolean = false,
     /** 本地书：没有书源可换，信息行不渲染换源入口（与原 XML 行为一致） */
     val isLocal: Boolean = false,
+    /**
+     * 网页文件（`book.isWebFile`）：目录尚未就绪，目录行显示「加载中」而非真实章节名。
+     * 对应原 XML 中 `llToc.gone()` + 「下载中...」那一支。
+     */
+    val isWebFile: Boolean = false,
 )
 
 // ── 头部：封面 + 书名 / 作者 / 来源 + 阅读时长 ─────────────────────
@@ -151,16 +159,21 @@ data class BookInfoUiState(
  * @param onReadRecordClick 阅读时长点击（进阅读记录页）
  * @param readRecordDescription 阅读时长的无障碍描述
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BookInfoHeader(
     modifier: Modifier = Modifier,
     state: BookInfoUiState,
     showTags: Boolean = true,
     onCoverClick: () -> Unit = {},
+    onCoverLongClick: (() -> Unit)? = null,
     onNameClick: () -> Unit = {},
+    onNameLongClick: (() -> Unit)? = null,
     onAuthorClick: () -> Unit = {},
+    onAuthorLongClick: (() -> Unit)? = null,
     onOriginClick: () -> Unit = {},
     onKindClick: (String) -> Unit = {},
+    onKindLongClick: ((String) -> Unit)? = null,
     onReadRecordClick: () -> Unit = {},
     readRecordDescription: String? = null,
 ) {
@@ -184,7 +197,12 @@ fun BookInfoHeader(
                 modifier = Modifier
                     .width(BookInfoCoverWidth)
                     .height(BookInfoCoverHeight)
-                    .clickable(onClick = onCoverClick)
+                    // 长按看大图（PhotoDialog）：原来挂在 CoverImageView 的 setOnLongClickListener 上，
+                    // 换 Compose 后必须由 combinedClickable 承担，否则该入口静默丢失
+                    .combinedClickable(
+                        onClick = onCoverClick,
+                        onLongClick = onCoverLongClick,
+                    )
                     .semantics {
                         role = Role.Button
                         contentDescription = state.name
@@ -223,7 +241,11 @@ fun BookInfoHeader(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = BookInfoTagMinHeight)
-                        .clickable(onClick = onNameClick)
+                        // 长按走 SourceCallBack.LONG_CLICK_BOOK_NAME：原 tvName.setOnLongClickListener
+                        .combinedClickable(
+                            onClick = onNameClick,
+                            onLongClick = onNameLongClick,
+                        )
                         .semantics {
                             role = Role.Button
                             contentDescription = state.name
@@ -238,7 +260,11 @@ fun BookInfoHeader(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = BookInfoTagMinHeight)
-                        .clickable(onClick = onAuthorClick)
+                        // 长按走 SourceCallBack.LONG_CLICK_AUTHOR：原 tvAuthor.setOnLongClickListener
+                        .combinedClickable(
+                            onClick = onAuthorClick,
+                            onLongClick = onAuthorLongClick,
+                        )
                         .semantics {
                             role = Role.Button
                             contentDescription = authorText
@@ -291,6 +317,7 @@ fun BookInfoHeader(
             BookInfoTagRow(
                 labels = kindRowLabels,
                 onClick = onKindClick,
+                onLongClick = onKindLongClick,
                 keyPrefix = "kind",
             )
         }
@@ -347,45 +374,48 @@ private fun BookInfoReadTimeLine(
  * @param onClick 点击回调；为 null 时整行不可点（纯展示）
  * @param keyPrefix LazyRow 的 key 前缀，避免与其它列表冲突
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BookInfoTagRow(
     modifier: Modifier = Modifier,
     labels: List<Pair<String, String?>>,
     onClick: ((String) -> Unit)?,
     keyPrefix: String,
+    onLongClick: ((String) -> Unit)? = null,
 ) {
+    val shape = RoundedCornerShape(8.dp)
     LazyRow(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         itemsIndexed(labels, key = { index, item -> "$keyPrefix-$index-${item.first}" }) { _, item ->
             val (label, payload) = item
-            // M3 的 Surface 只有「可点（onClick 非空）」与「不可点（无 onClick 形参）」两个重载，
-            // 没有 onClick: (() -> Unit)? 这一形态，所以不能把 null 传进去，必须分两条分支。
-            if (onClick != null && payload != null) {
-                Surface(
-                    // 可点胶囊受 48dp 命中区下限约束；纯展示胶囊不加 onClick 也就不受该约束
-                    modifier = Modifier
-                        .heightIn(min = BookInfoTagMinHeight)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = label
+            val clickable = payload != null && (onClick != null || onLongClick != null)
+            // 先 clip 再 combinedClickable：水波纹被裁在圆角内，否则点击反馈是方的
+            Surface(
+                modifier = Modifier
+                    .then(
+                        if (clickable) {
+                            Modifier
+                                .heightIn(min = BookInfoTagMinHeight)
+                                .clip(shape)
+                                .combinedClickable(
+                                    onClick = { payload?.let { p -> onClick?.invoke(p) } },
+                                    onLongClick = { payload?.let { p -> onLongClick?.invoke(p) } },
+                                )
+                                .semantics {
+                                    role = Role.Button
+                                    contentDescription = label
+                                }
+                        } else {
+                            Modifier
                         },
-                    onClick = { onClick.invoke(payload) },
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ) {
-                    BookInfoTagText(label = label)
-                }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ) {
-                    BookInfoTagText(label = label)
-                }
+                    ),
+                shape = shape,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            ) {
+                BookInfoTagText(label = label)
             }
         }
     }
@@ -411,13 +441,15 @@ private fun BookInfoTagText(
 private fun BookInfoTagRow(
     modifier: Modifier = Modifier,
     labels: List<String>,
-    onClick: ((String) -> Unit)?,
     keyPrefix: String,
+    onClick: ((String) -> Unit)? = null,
+    onLongClick: ((String) -> Unit)? = null,
 ) {
     BookInfoTagRow(
         modifier = modifier,
         labels = labels.map { it to null },
         onClick = onClick,
+        onLongClick = onLongClick,
         keyPrefix = keyPrefix,
     )
 }
