@@ -27,12 +27,12 @@ import io.legado.app.R
  */
 @Composable
 internal fun TagCard(
+    modifier: Modifier = Modifier,
     tag: BookshelfTagItemUi,
     onVisibilityChange: (Boolean) -> Unit,
     onManageBooks: () -> Unit,
     onDelete: () -> Unit,
-    onRename: () -> Unit,
-    modifier: Modifier = Modifier
+    onRename: () -> Unit
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
