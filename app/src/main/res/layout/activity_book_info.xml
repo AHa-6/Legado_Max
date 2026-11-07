@@ -66,75 +66,20 @@
                             app:arcHeight="36dp"
                             app:bgColor="@color/background" />
 
-                        <!-- 封面由居中改为左置：右侧腾出的位置放书名与标签，
-                             信息密度比"封面独占一行 + 下面再堆文字"更高（参考 md3 详情页版式） -->
-                        <androidx.cardview.widget.CardView
-                            android:id="@+id/iv_cover_c"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_alignParentStart="true"
-                            android:layout_marginStart="16dp"
-                            android:layout_marginTop="3dp"
-                            android:layout_marginEnd="3dp"
-                            android:layout_marginBottom="3dp"
-                            app:cardCornerRadius="5dp"
-                            app:cardElevation="8dp">
-
-                            <io.legado.app.ui.widget.image.CoverImageView
-                                android:id="@+id/iv_cover"
-                                android:layout_width="110dp"
-                                android:layout_height="160dp"
-                                android:contentDescription="@string/img_cover"
-                                android:scaleType="centerCrop"
-                                android:src="@drawable/image_cover_default" />
-
-                        </androidx.cardview.widget.CardView>
-
-                        <!-- 与封面顶对齐而非居中：ArcView 的弧顶在 90dp 处，
-                             居中会让文字压到弧形的背景色块上（该块是 @color/background，
-                             白字在上面对比度不足）。顶对齐后文字落在 10~60dp，避开弧形区。 -->
-                        <LinearLayout
+                        <!-- 头部改为 Compose（BookInfoHeader）：封面左置，右侧书名/作者，
+                             下面分类胶囊行。版式取自 md3 详情页，信息密度比「封面独占一行 +
+                             下面再堆文字」更高。
+                             必须留在 ll_content_bg 之外：那一层有不透明 @color/background，
+                             套进去会挡住 bg_book 的模糊封面。文字色因此固定走
+                             BookInfoOnBackdrop（浅色），与这层暗底匹配，不随主题翻深色。
+                             注意 layout-land 仍是旧版 View 头部，故本 id 只在竖屏存在，
+                             Activity 侧对 iv_cover_c/iv_cover/tv_name/lb_kind 一律用安全调用。 -->
+                        <androidx.compose.ui.platform.ComposeView
+                            android:id="@+id/compose_header"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_alignTop="@id/iv_cover_c"
-                            android:layout_toEndOf="@id/iv_cover_c"
-                            android:layout_marginStart="12dp"
-                            android:layout_marginTop="10dp"
-                            android:layout_marginEnd="16dp"
-                            android:orientation="vertical">
-
-                            <HorizontalScrollView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="6dp"
-                                android:scrollbars="none">
-
-                                <TextView
-                                    android:id="@+id/tv_name"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:includeFontPadding="false"
-                                    android:singleLine="true"
-                                    android:text="@string/book_name"
-                                    android:textColor="@color/white"
-                                    android:textSize="18sp"
-                                    tools:ignore="RtlHardcoded" />
-                            </HorizontalScrollView>
-
-                            <HorizontalScrollView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="6dp"
-                                android:scrollbars="none">
-
-                                <io.legado.app.ui.widget.LabelsBar
-                                    android:id="@+id/lb_kind"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:visibility="gone" />
-                            </HorizontalScrollView>
-
-                        </LinearLayout>
+                            android:layout_alignParentStart="true"
+                            android:layout_marginTop="3dp" />
 
                     </RelativeLayout>
 

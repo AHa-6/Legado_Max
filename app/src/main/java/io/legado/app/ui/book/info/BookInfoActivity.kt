@@ -293,6 +293,22 @@ class BookInfoActivity :
 
     private var pooledWebView: PooledWebView? = null
 
+    /**
+     * 详情页 Compose 状态载体（头部与后续信息行区共用）。
+     *
+     * 不直接把 Book 塞进 @Composable：详情页是 View 宿主，数据来自
+     * `viewModel.bookData.observe` 回调，需要一个可被多次局部更新的稳定持有者。
+     */
+    private val composeState = BookInfoComposeState()
+
+    /**
+     * 头部 ComposeView 是否已装好内容。
+     *
+     * 竖屏才有 `compose_header`，横屏（layout-land）仍是旧版 View 头部，所以这里
+     * 必须容忍 null；同时避免重复 setContent 造成 composition 重建。
+     */
+    private var composeHeaderInstalled = false
+
     private val imgAvailableWidth by lazy {
         val textView = introTextView
         textView.width - textView.paddingLeft - textView.paddingRight - 8.dpToPx() // 8是为了文字对齐额外的右边距
@@ -334,16 +350,21 @@ class BookInfoActivity :
         binding.llInfo.setBackgroundColor(backgroundColor)
         binding.llAuthorOtherWorks?.setBackgroundColor(backgroundColor)
         binding.vSpacerBottom?.setBackgroundColor(backgroundColor)
-        binding.ivCoverC.setCardBackgroundColor(backgroundColor)
+        // 竖屏头部已换成 Compose（compose_header），iv_cover_c 只剩 layout-land 才有，
+        // 因此这里的封面卡片配色只在横屏生效，必须用安全调用，否则竖屏直接 NPE。
+        binding.ivCoverC?.setCardBackgroundColor(backgroundColor)
         if (!AppConfig.bookCoverShadow) {
-            binding.ivCoverC.cardElevation = 0f
-            binding.ivCoverC.setCardBackgroundColor(android.graphics.Color.TRANSPARENT)
+            binding.ivCoverC?.cardElevation = 0f
+            binding.ivCoverC?.setCardBackgroundColor(android.graphics.Color.TRANSPARENT)
         }
         binding.flAction.setBackgroundColor(bottomBackground)
         binding.flAction.applyNavigationBarPadding(withInitialPadding = true)
         binding.tvShelf.setTextColor(getPrimaryTextColor(ColorUtils.isColorLight(bottomBackground)))
         binding.tvToc.text = getString(R.string.toc_s, getString(R.string.loading))
         initAuthorOtherWorksView()
+        // 头部 ComposeView 必须在首个 showBook 回调之前装好，否则状态更新时还没有
+        // composition 接收；横屏没有该 View，installComposeHeader 内部对 null 直接返回
+        installComposeHeader()
         viewModel.bookData.observe(this) { showBook(it) }
         viewModel.chapterListData.observe(this) { upLoading(false, it) }
         viewModel.authorOtherWorksData.observe(this) {
@@ -628,10 +649,22 @@ class BookInfoActivity :
                 "totalChapterNum=${book.totalChapterNum}",
         )
         showCover(book)
-        tvName.text = book.name
+        // tv_name 只剩 layout-land（竖屏书名由 Compose 头部渲染），故用安全调用
+        tvName?.text = book.name
         tvAuthor.text = getString(R.string.author_show, book.getRealAuthor())
         tvOrigin.text = getString(R.string.origin_show, book.originName)
         tvLasted.text = getString(R.string.lasted_show, book.latestChapterTitle)
+        // 喂给 Compose 头部：封面路径走与 View 侧同一个 BookCover.getDisplayCover，
+        // 避免两套布局取到不同封面。分类（kinds）不在这里填——本地书要先把文件大小
+        // 追加进分类列表，那份计算在 upKinds 里，由那边补写，否则横竖屏分类会不一致。
+        composeState.update {
+            copy(
+                name = book.name,
+                author = book.getRealAuthor(),
+                originName = book.originName,
+                coverPath = BookCover.getDisplayCover(book),
+            )
+        }
         showBookIntro(book)
         upReadRecord(book)
         if (book.isWebFile) {
@@ -847,15 +880,25 @@ class BookInfoActivity :
                 }
             }
             if (kinds.isEmpty()) {
-                lbKind.gone()
+                // Compose 头部按 kinds 是否为空自行决定不渲染分类行，这里只需同步状态
+                composeState.update { copy(kinds = emptyList()) }
+                lbKind?.gone()
             } else {
-                lbKind.visible()
+                // 必须在下面 `source == null` 的早退之前喂状态：否则本地书/无书源时
+                // Compose 头部拿不到分类，横竖屏（land 仍用 LabelsBar）会不一致。
+                // kinds 已含本地书追加的文件大小，与旧 View 完全同源。
+                // 先落成 kindList 再 copy：update 的接收者也是 BookInfoUiState，它同样有
+                // kinds 属性，直接写 copy(kinds = kinds) 会让两侧同名、依赖「局部变量优先于
+                // 隐式接收者成员」这条解析规则才碰巧正确，换个写法就可能悄悄复制成旧值。
+                val kindList = kinds
+                composeState.update { copy(kinds = kindList) }
+                lbKind?.visible()
                 val source = viewModel.bookSource
                 if (source == null) {
-                    lbKind.setLabels(kinds)
+                    lbKind?.setLabels(kinds)
                     return@launch
                 }
-                lbKind.setLabels(
+                lbKind?.setLabels(
                     kinds,
                     { kind ->
                         SourceCallBack.callBackBtn(
@@ -889,10 +932,14 @@ class BookInfoActivity :
         // 墨水屏渲染：整屏封面底图照常加载（此前在墨水屏下直接不加载，详情页看起来是空的），
         // 由 ImageView 的 colorFilter 转灰阶
         binding.bgBook.colorFilter = EInkRender.androidFilterOrNull()
-        binding.ivCover.load(book, false) {
-            BookCover.loadBlur(this, BookCover.getDisplayCover(book), false, book.origin)
-                .into(binding.bgBook)
-        }
+        // 模糊底图不再挂在封面 View 的 onLoadFinish 上：竖屏头部换成 Compose 后
+        // `binding.ivCover` 为 null（该 id 只剩 layout-land），原来那条链式回调永不触发，
+        // 头部会失去暗底，而 BookInfoHeader 的文字是固定的浅色（BookInfoOnBackdrop），
+        // 直接压在浅色背景上不可读。故改为独立加载，与封面 View 是否存在解耦。
+        BookCover.loadBlur(this, BookCover.getDisplayCover(book), false, book.origin)
+            .into(binding.bgBook)
+        // 横屏仍需要旧版 View 封面；竖屏封面由 Compose 侧的 AppBookCover 负责
+        binding.ivCover?.load(book, false)
     }
 
     private fun upLoading(isLoading: Boolean, chapterList: List<BookChapter>? = null) {
@@ -959,20 +1006,168 @@ class BookInfoActivity :
         binding.tvTag?.text = getString(R.string.book_tag_s, text)
     }
 
-    private fun initViewEvent() = binding.run {
-        ivCover.setOnClickListener {
-            viewModel.getBook()?.let {
-                showDialogFragment(
-                    ChangeCoverDialog(it.name, it.author),
+    /**
+     * 头部点击回调：View 头部（横屏）与 Compose 头部（竖屏）共用同一批实现。
+     *
+     * 抽成具名函数而不是各自内联 lambda：两套布局必须行为一致，内联写两遍迟早走偏
+     * （原来 `ivCover`/`tvName`/`tvAuthor` 的点击、长按语义就是分散在 initViewEvent 里的）。
+     */
+    private fun onCoverClickAction() {
+        viewModel.getBook()?.let {
+            showDialogFragment(ChangeCoverDialog(it.name, it.author))
+        }
+    }
+
+    /** 长按封面看大图：原来挂在 CoverImageView.setOnLongClickListener 上 */
+    private fun onCoverLongClickAction() {
+        viewModel.getBook()?.let { book ->
+            BookCover.getDisplayCover(book)?.let { path ->
+                showDialogFragment(PhotoDialog(path, isBook = true))
+            }
+        }
+    }
+
+    private fun onBookNameClickAction() {
+        viewModel.getBook(false)?.let { book ->
+            SourceCallBack.callBackBtn(
+                this@BookInfoActivity,
+                SourceCallBack.CLICK_BOOK_NAME,
+                viewModel.bookSource,
+                book,
+                null,
+                result = book.name,
+            ) {
+                SearchActivity.start(this@BookInfoActivity, book.name)
+            }
+        }
+    }
+
+    private fun onBookNameLongClickAction() {
+        viewModel.getBook(false)?.let { book ->
+            SourceCallBack.callBackBtn(
+                this@BookInfoActivity,
+                SourceCallBack.LONG_CLICK_BOOK_NAME,
+                viewModel.bookSource,
+                book,
+                null,
+                result = book.name,
+            ) {
+                SearchActivity.start(this@BookInfoActivity, book.name)
+            }
+        }
+    }
+
+    private fun onAuthorClickAction() {
+        viewModel.getBook(false)?.let { book ->
+            SourceCallBack.callBackBtn(
+                this@BookInfoActivity,
+                SourceCallBack.CLICK_AUTHOR,
+                viewModel.bookSource,
+                book,
+                null,
+                result = book.author,
+            ) {
+                SearchActivity.start(this@BookInfoActivity, book.author)
+            }
+        }
+    }
+
+    private fun onAuthorLongClickAction() {
+        viewModel.getBook(false)?.let { book ->
+            SourceCallBack.callBackBtn(
+                this@BookInfoActivity,
+                SourceCallBack.LONG_CLICK_AUTHOR,
+                viewModel.bookSource,
+                book,
+                null,
+                result = book.author,
+            ) {
+                SearchActivity.start(this@BookInfoActivity, book.author)
+            }
+        }
+    }
+
+    /**
+     * 分类胶囊点击：按该分类搜索。
+     *
+     * 无书源时（`viewModel.bookSource == null`）原实现给 `LabelsBar` 传的是不带回调的
+     * `setLabels(kinds)`，即点了什么都不发生；这里用早退保持同一语义。
+     */
+    private fun onKindClickAction(kind: String) {
+        val source = viewModel.bookSource ?: return
+        val book = viewModel.getBook(false) ?: return
+        SourceCallBack.callBackBtn(
+            this@BookInfoActivity,
+            SourceCallBack.CLICK_BOOK_LABEL,
+            source,
+            book,
+            null,
+            result = kind,
+        ) {
+            SearchActivity.start(this@BookInfoActivity, source, kind)
+        }
+    }
+
+    /** 分类胶囊长按：只触发书源回调，不进搜索（与原 LabelsBar 长按一致） */
+    private fun onKindLongClickAction(kind: String) {
+        val source = viewModel.bookSource ?: return
+        val book = viewModel.getBook(false) ?: return
+        SourceCallBack.callBackBtn(
+            this@BookInfoActivity,
+            SourceCallBack.LONG_CLICK_BOOK_LABEL,
+            source,
+            book,
+            null,
+            result = kind,
+        )
+    }
+
+    /**
+     * 安装头部 ComposeView 的内容。
+     *
+     * 只有竖屏布局有 `compose_header`；layout-land 仍是旧版 View 头部（封面 165×240 居中、
+     * `tv_name` 用 `@color/primaryText`，并不叠在模糊底图上），故这里对 null 直接返回，
+     * 不能把竖屏那套白字配色套到横屏去。
+     *
+     * 本阶段只接管封面 / 书名 / 分类胶囊：作者、书源、标签、阅读时长四行仍由 `ll_info`
+     * 里的旧 View 渲染（`tv_author` 12 处引用、`tv_origin` + `tv_change_source`、
+     * `ll_book_tag`、`ll_read_record`），头部若一并渲染会同屏出现两份，因此显式关掉。
+     */
+    private fun installComposeHeader() {
+        val header = binding.composeHeader ?: return
+        if (composeHeaderInstalled) return
+        composeHeaderInstalled = true
+        // 与仓内其它 ComposeView 宿主一致：随 ViewTree 生命周期销毁，
+        // 否则退出页面后 composition 仍持有 Activity（详情页历史上已有泄漏排查记录）
+        header.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+        header.setContent {
+            LegadoTheme {
+                val state = composeState.state
+                BookInfoHeader(
+                    state = state,
+                    showAuthor = false,
+                    showOrigin = false,
+                    showTags = false,
+                    onCoverClick = ::onCoverClickAction,
+                    onCoverLongClick = ::onCoverLongClickAction,
+                    onNameClick = ::onBookNameClickAction,
+                    onNameLongClick = ::onBookNameLongClickAction,
+                    onAuthorClick = ::onAuthorClickAction,
+                    onAuthorLongClick = ::onAuthorLongClickAction,
+                    onKindClick = ::onKindClickAction,
+                    onKindLongClick = ::onKindLongClickAction,
                 )
             }
         }
-        ivCover.setOnLongClickListener {
-            viewModel.getBook()?.let { book ->
-                BookCover.getDisplayCover(book)?.let { path ->
-                    showDialogFragment(PhotoDialog(path, isBook = true))
-                }
-            }
+    }
+
+    private fun initViewEvent() = binding.run {
+        // 竖屏头部已 Compose 化，ivCover / tvName / lbKind / ivCoverC 只剩 layout-land 存在，
+        // 对应 binding 变成可空类型，全部改为安全调用。横屏仍是旧 View 头部，语义不能丢，
+        // 所以这里保留监听绑定，只把接收者改成可空；竖屏由 installComposeHeader 接管同一批回调。
+        ivCover?.setOnClickListener { onCoverClickAction() }
+        ivCover?.setOnLongClickListener {
+            onCoverLongClickAction()
             true
         }
         tvRead.setOnClickListener {
@@ -1053,62 +1248,17 @@ class BookInfoActivity :
                 )
             }
         }
-        tvAuthor.setOnClickListener {
-            viewModel.getBook(false)?.let { book ->
-                SourceCallBack.callBackBtn(
-                    this@BookInfoActivity,
-                    SourceCallBack.CLICK_AUTHOR,
-                    viewModel.bookSource,
-                    book,
-                    null,
-                    result = book.author,
-                ) {
-                    SearchActivity.start(this@BookInfoActivity, book.author)
-                }
-            }
-        }
+        // tv_name 只剩 layout-land 有（竖屏头部已 Compose 化），binding 变为可空；
+        // tv_author 两套布局都有（竖屏仍在 ll_info 里），保持非空调用，不要多加 ?.
+        // 回调统一走上面的具名函数，与 Compose 头部同源，避免横竖屏行为漂移。
+        tvAuthor.setOnClickListener { onAuthorClickAction() }
         tvAuthor.setOnLongClickListener {
-            viewModel.getBook(false)?.let { book ->
-                SourceCallBack.callBackBtn(
-                    this@BookInfoActivity,
-                    SourceCallBack.LONG_CLICK_AUTHOR,
-                    viewModel.bookSource,
-                    book,
-                    null,
-                    result = book.author,
-                ) {
-                    SearchActivity.start(this@BookInfoActivity, book.author)
-                }
-            }
+            onAuthorLongClickAction()
             true
         }
-        tvName.setOnClickListener {
-            viewModel.getBook(false)?.let { book ->
-                SourceCallBack.callBackBtn(
-                    this@BookInfoActivity,
-                    SourceCallBack.CLICK_BOOK_NAME,
-                    viewModel.bookSource,
-                    book,
-                    null,
-                    result = book.name,
-                ) {
-                    SearchActivity.start(this@BookInfoActivity, book.name)
-                }
-            }
-        }
-        tvName.setOnLongClickListener {
-            viewModel.getBook(false)?.let { book ->
-                SourceCallBack.callBackBtn(
-                    this@BookInfoActivity,
-                    SourceCallBack.LONG_CLICK_BOOK_NAME,
-                    viewModel.bookSource,
-                    book,
-                    null,
-                    result = book.name,
-                ) {
-                    SearchActivity.start(this@BookInfoActivity, book.name)
-                }
-            }
+        tvName?.setOnClickListener { onBookNameClickAction() }
+        tvName?.setOnLongClickListener {
+            onBookNameLongClickAction()
             true
         }
         refreshLayout?.setOnRefreshListener {

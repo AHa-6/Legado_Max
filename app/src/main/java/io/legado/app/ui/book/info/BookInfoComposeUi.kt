@@ -183,6 +183,22 @@ fun BookInfoHeader(
     modifier: Modifier = Modifier,
     state: BookInfoUiState,
     showTags: Boolean = true,
+    /**
+     * 是否渲染「所属书源」行。
+     *
+     * 分阶段接线的开关：头部先只接管封面/书名/分类，书源行仍由 `ll_info` 里的
+     * `tv_origin` + `tv_change_source`（换源按钮）承担，两处同时渲染会把书源显示两遍。
+     * 等信息行区也换成 [BookInfoInfoRows] 并删掉那组旧行后，再把它打开。
+     */
+    showOrigin: Boolean = true,
+    /**
+     * 是否渲染「作者」行。
+     *
+     * 同上，分阶段接线用：`ll_info` 里的 `tv_author` 行（带 ic_author 图标，12 处引用）
+     * 目前仍是作者的唯一渲染处。头部先不接管它，否则同屏出现两个作者。
+     * md3 版式里作者确实在头部，等旧行随信息行区一起被替换后再打开。
+     */
+    showAuthor: Boolean = true,
     onCoverClick: () -> Unit = {},
     onCoverLongClick: (() -> Unit)? = null,
     onNameClick: () -> Unit = {},
@@ -269,43 +285,47 @@ fun BookInfoHeader(
                             contentDescription = state.name
                         },
                 )
-                Text(
-                    text = authorText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = BookInfoOnBackdropSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = BookInfoTagMinHeight)
-                        // 长按走 SourceCallBack.LONG_CLICK_AUTHOR：原 tvAuthor.setOnLongClickListener
-                        .combinedClickable(
-                            onClick = onAuthorClick,
-                            onLongClick = onAuthorLongClick,
-                        )
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = authorText
-                        },
-                )
+                if (showAuthor) {
+                    Text(
+                        text = authorText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = BookInfoOnBackdropSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = BookInfoTagMinHeight)
+                            // 长按走 SourceCallBack.LONG_CLICK_AUTHOR：原 tvAuthor.setOnLongClickListener
+                            .combinedClickable(
+                                onClick = onAuthorClick,
+                                onLongClick = onAuthorLongClick,
+                            )
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = authorText
+                            },
+                    )
+                }
                 // 所属书源：md3 用 primary 色 + labelMedium 表达「可点」。这里不跟 primary：
                 // 头部底色是暗的模糊封面，浅色主题下 primary 是深色饱和色，压在暗底上对比度不足。
                 // 可点性改由水波纹与无障碍 role=Button 承担，颜色仍走头部浅色文字档位。
-                Text(
-                    text = originText,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = BookInfoOnBackdropSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = BookInfoTagMinHeight)
-                        .clickable(onClick = onOriginClick)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = originText
-                        },
-                )
+                if (showOrigin) {
+                    Text(
+                        text = originText,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = BookInfoOnBackdropSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = BookInfoTagMinHeight)
+                            .clickable(onClick = onOriginClick)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = originText
+                            },
+                    )
+                }
                 if (state.showReadRecord) {
                     BookInfoReadTimeLine(
                         readTimeMillis = state.readTimeMillis,
