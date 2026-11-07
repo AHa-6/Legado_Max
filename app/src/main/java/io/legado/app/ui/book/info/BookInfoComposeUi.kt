@@ -422,8 +422,10 @@ private fun BookInfoTagRow(
                                 .heightIn(min = BookInfoTagMinHeight)
                                 .clip(shape)
                                 .combinedClickable(
-                                    onClick = { payload?.let { p -> onClick?.invoke(p) } },
-                                    onLongClick = { payload?.let { p -> onLongClick?.invoke(p) } },
+                                    // payload 已被 clickable 的非空判断智能转换为 String，
+                                    // 再写 payload?.let 是多余安全调用（编译器会告警）
+                                    onClick = { onClick?.invoke(payload) },
+                                    onLongClick = { onLongClick?.invoke(payload) },
                                 )
                                 .semantics {
                                     role = Role.Button
